@@ -1,0 +1,58 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python cache and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter temporary files
+.ipynb_checkpoints/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+.envrc
+.secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local interview source documents (may contain personal information)
+data/*.pdf
+data/*.doc
+data/*.docx
+data/*.xls
+data/*.xlsx
+data/raw/
+data/uploads/
+data/processed/
+
+# Local databases and generated data
+*.db
+*.sqlite
+*.sqlite3
+*.log
+.cache/
+evals/**/results/
+evals/**/artifacts/
+
+# Test coverage reports
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Editor settings
+.vscode/
+.idea/
