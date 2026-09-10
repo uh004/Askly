@@ -5,6 +5,12 @@ ipykernel
 # Environment
 python-dotenv
 
+# API
+fastapi
+uvicorn[standard]
+python-multipart
+httpx
+
 # LangChain / LangGraph
 langchain
 langchain-openai

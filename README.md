@@ -13,13 +13,33 @@ src/
 ├─ chains/         # Prompt + Model + Structured Output
 ├─ services/       # PDF 및 채용공고 파싱
 ├─ nodes/          # 단계별 LangGraph Node
-└─ graph/          # 전체 Node 연결과 조건 분기
+├─ graph/          # 전체 Node 연결과 조건 분기
+└─ api/            # FastAPI 앱, 요청·응답 Schema, 면접 Route
 ```
 
 [`notebooks/pipeline_v2.ipynb`](notebooks/pipeline_v2.ipynb)는 위 모듈을 불러와
 구조와 실행 방법을 확인하는 용도로 사용합니다. 테스트 코드는 노트북에서 실행하지
 않고 `tests/`와 `evals/`에서 관리합니다. FastAPI와 Next.js는 이 구조 위에 다음
 단계로 연결합니다.
+
+## FastAPI 실행
+
+프로젝트 루트에서 의존성을 설치하고 개발 서버를 실행합니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn src.api.main:app --reload
+```
+
+- API 문서: `http://127.0.0.1:8000/docs`
+- 상태 확인: `GET http://127.0.0.1:8000/health`
+- 면접 시작: `POST /api/interviews/start`
+- 답변 제출: `POST /api/interviews/{session_id}/answers`
+- 상태·결과 조회: `GET /api/interviews/{session_id}`
+
+면접 시작 요청은 `multipart/form-data` 형식으로 `resume_file` PDF와
+`job_posting_url`을 함께 전송합니다. 업로드 파일은 파싱 후 즉시 삭제됩니다.
+현재 세션 상태는 개발용 `InMemorySaver`에 저장되므로 서버를 재시작하면 사라집니다.
 
 ## 검증 구조 한눈에 보기
 
