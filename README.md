@@ -3,6 +3,24 @@
 지원자 서류와 채용공고를 분석해 면접 전략을 세우고, 질문 생성·답변 평가·진행
 판단·최종 피드백까지 수행하는 LangGraph 기반 프로젝트입니다.
 
+## 프로젝트 구조
+
+```text
+src/
+├─ config.py       # 모델명과 질문·재시도 제한
+├─ state.py        # 전체 Graph 공유 상태
+├─ schemas/        # Pydantic Structured Output
+├─ chains/         # Prompt + Model + Structured Output
+├─ services/       # PDF 및 채용공고 파싱
+├─ nodes/          # 단계별 LangGraph Node
+└─ graph/          # 전체 Node 연결과 조건 분기
+```
+
+[`notebooks/pipeline_v2.ipynb`](notebooks/pipeline_v2.ipynb)는 위 모듈을 불러와
+구조와 실행 방법을 확인하는 용도로 사용합니다. 테스트 코드는 노트북에서 실행하지
+않고 `tests/`와 `evals/`에서 관리합니다. FastAPI와 Next.js는 이 구조 위에 다음
+단계로 연결합니다.
+
 ## 검증 구조 한눈에 보기
 
 세 검증은 같은 LangSmith Project를 사용하고 Dataset과 Experiment 이름으로 구분합니다.

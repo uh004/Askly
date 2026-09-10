@@ -2,21 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Mapping
+from typing import Any, Mapping
 
-from pydantic import BaseModel
-
+from src.config import (
+    MAX_FOLLOWUPS_PER_COMPETENCY,
+    MAX_INTERVIEW_QUESTIONS,
+    MIN_SUFFICIENT_SCORE,
+)
 from src.nodes.answer_evaluation import calculate_overall_score
-
-
-MAX_INTERVIEW_QUESTIONS = 10
-MAX_FOLLOWUPS_PER_COMPETENCY = 2
-MIN_SUFFICIENT_SCORE = 70.0
-
-
-class InterviewRouteDecision(BaseModel):
-    route: Literal["FOLLOW_UP", "NEXT", "END"]
-    end_reason: str | None = None
+from src.schemas.interview import InterviewRouteDecision
 
 
 def get_evaluation_overall_score(evaluation: Mapping[str, Any]) -> float:

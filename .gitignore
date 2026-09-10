@@ -13,6 +13,9 @@ __pycache__/
 # Jupyter temporary files
 .ipynb_checkpoints/
 
+# Local reference images
+image/
+
 # Environment variables and secrets
 .env
 .env.*
