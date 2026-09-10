@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from collections import Counter
 
@@ -17,7 +18,11 @@ from src.nodes.answer_evaluation import (
 
 
 class FakeAnswerEvaluationChain:
-    def invoke(self, _: dict) -> AnswerEvaluationResult:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def invoke(self, inputs: dict) -> AnswerEvaluationResult:
+        self.calls.append(inputs)
         return AnswerEvaluationResult(
             summary="질문 의도와 관련된 내용을 일부 구체적으로 설명했습니다.",
             scores=AnswerEvaluationScores(
@@ -111,6 +116,57 @@ class AnswerEvaluationReliabilityTest(unittest.TestCase):
         self.assertEqual(len(evaluation.improvement_points), 3)
         self.assertEqual(len(evaluation.missing_points), 3)
         self.assertEqual(len(evaluation.answer_evidence), 5)
+
+    def test_overall_score_uses_configured_weights(self) -> None:
+        scores = {
+            "relevance": 5,
+            "specificity": 4,
+            "logical_structure": 3,
+            "role_clarity": 2,
+            "action_clarity": 1,
+            "result_clarity": 5,
+        }
+        self.assertEqual(calculate_overall_score(scores), 68.0)
+
+    def test_follow_up_uses_only_previous_answers_for_same_competency(self) -> None:
+        chain = FakeAnswerEvaluationChain()
+        state = {
+            "current_question": "개선 결과를 어떻게 측정했나요?",
+            "current_answer": "응답 시간을 다시 측정해 개선을 확인했습니다.",
+            "current_competency": "문제 해결 능력",
+            "question_type": "FOLLOW_UP",
+            "interview_strategy": {
+                "competencies": [
+                    {
+                        "competency": "문제 해결 능력",
+                        "verification_points": ["측정 결과"],
+                    }
+                ]
+            },
+            "evaluation_history": [
+                {
+                    "question": "문제를 어떻게 발견했나요?",
+                    "answer": "부하 테스트로 병목을 발견했습니다.",
+                    "competency": "문제 해결 능력",
+                },
+                {
+                    "question": "협업 경험을 설명해 주세요?",
+                    "answer": "팀과 기준을 합의했습니다.",
+                    "competency": "협업 능력",
+                },
+            ],
+        }
+
+        answer_evaluation_node(state, chain=chain)
+
+        previous_answers = json.loads(
+            chain.calls[0]["previous_competency_answers"]
+        )
+        self.assertEqual(len(previous_answers), 1)
+        self.assertEqual(
+            previous_answers[0]["answer"],
+            "부하 테스트로 병목을 발견했습니다.",
+        )
 
     def test_failed_target_output_does_not_crash_evaluators(self) -> None:
         reference = self.cases[0]["reference_outputs"]

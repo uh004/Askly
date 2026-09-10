@@ -61,6 +61,45 @@ class RouterEvaluationTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     interview_review_node(state)
 
+    def test_interview_can_end_before_maximum_question_count(self) -> None:
+        competencies = ["문제 해결", "협업", "직무 이해"]
+        result = interview_review_node(
+            {
+                "current_evaluation": {
+                    "overall_score": 82.0,
+                    "missing_points": [],
+                },
+                "current_competency": competencies[-1],
+                "target_competencies": competencies,
+                "interview_history": [
+                    {"competency": competency, "question_type": "INITIAL"}
+                    for competency in competencies
+                ],
+                "question_count": 3,
+                "followup_count": 0,
+            }
+        )
+        self.assertEqual(result["route"], "END")
+
+    def test_second_follow_up_is_allowed_for_same_competency(self) -> None:
+        result = interview_review_node(
+            {
+                "current_evaluation": {
+                    "overall_score": 64.0,
+                    "missing_points": ["성과 측정 방법"],
+                },
+                "current_competency": "문제 해결",
+                "target_competencies": ["문제 해결", "협업", "직무 이해"],
+                "interview_history": [
+                    {"competency": "문제 해결", "question_type": "INITIAL"},
+                    {"competency": "문제 해결", "question_type": "FOLLOW_UP"},
+                ],
+                "question_count": 2,
+                "followup_count": 1,
+            }
+        )
+        self.assertEqual(result["route"], "FOLLOW_UP")
+
 
 if __name__ == "__main__":
     unittest.main()

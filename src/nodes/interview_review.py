@@ -69,6 +69,20 @@ def interview_review_node(state: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("question_count는 0 이상의 정수여야 합니다.")
     if not isinstance(followup_count, int) or followup_count < 0:
         raise ValueError("followup_count는 0 이상의 정수여야 합니다.")
+    if question_count < len(interview_history):
+        raise ValueError(
+            "question_count가 interview_history의 질문 수보다 작습니다."
+        )
+
+    history_followup_count = sum(
+        1
+        for item in interview_history
+        if item.get("question_type") == "FOLLOW_UP"
+    )
+    if followup_count < history_followup_count:
+        raise ValueError(
+            "followup_count가 interview_history의 전체 꼬리질문 수보다 작습니다."
+        )
 
     if question_count >= MAX_INTERVIEW_QUESTIONS:
         return InterviewRouteDecision(
@@ -77,6 +91,8 @@ def interview_review_node(state: Mapping[str, Any]) -> dict[str, Any]:
         ).model_dump()
 
     overall_score = get_evaluation_overall_score(current_evaluation)
+    if not 20 <= overall_score <= 100:
+        raise ValueError("overall_score는 20 이상 100 이하여야 합니다.")
     missing_points = [
         str(item).strip()
         for item in current_evaluation.get("missing_points", [])
@@ -87,11 +103,6 @@ def interview_review_node(state: Mapping[str, Any]) -> dict[str, Any]:
     competency_followups = count_competency_followups(
         interview_history, current_competency
     )
-    if followup_count < competency_followups:
-        raise ValueError(
-            "followup_count가 interview_history의 꼬리질문 수보다 작습니다."
-        )
-
     reviewed_competencies = {
         item.get("competency")
         for item in interview_history

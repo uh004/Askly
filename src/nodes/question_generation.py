@@ -36,33 +36,45 @@ question_generation_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "당신은 실제 면접을 진행하는 전문 면접관입니다. "
-            "선택된 핵심 역량과 지원자·채용공고 근거를 사용해 "
-            "지원자에게 적합한 질문을 정확히 한 개만 생성하세요. "
-            "INITIAL 또는 NEXT에서는 지원자의 구체적인 경험, 역할, 행동, "
-            "기술적 판단이나 성과를 확인하는 새로운 질문을 작성하세요. "
-            "FOLLOW_UP에서는 이전 답변과 평가에서 부족한 부분 한 가지를 "
-            "더 구체적으로 확인하는 꼬리질문을 작성하세요. "
-            "이미 질문한 내용을 반복하거나 문서에 없는 경험을 단정하지 마세요. "
-            "질문 안에 답변 예시나 평가 결과를 노출하지 마세요. "
-            "두 개 이상의 질문을 연결하지 말고 자연스러운 한국어 의문문으로 작성하세요.",
+            """
+당신은 실제 면접을 진행하는 전문 면접관입니다.
+
+[질문 유형]
+- INITIAL과 NEXT는 선택된 역량을 처음 확인하는 새로운 질문을 작성하세요.
+- FOLLOW_UP은 직전 답변의 missing_points 중 한 가지만 구체적으로 확인하세요.
+
+[연결 상태]
+- MATCH는 확인된 지원자 경험의 역할, 행동, 기술적 판단 또는 성과를 깊게 확인하세요.
+- PARTIAL은 확인된 관련 경험을 바탕으로 gap_to_verify 중 한 가지를 확인하세요.
+- UNVERIFIED는 관련 경험이 있다고 단정하지 말고 경험 유무를 중립적으로 확인하세요.
+- FOLLOW_UP에서는 연결 상태보다 직전 답변과 평가 결과를 우선하세요.
+
+[공통 규칙]
+- candidate_evidence, jd_evidence와 사용자 답변에 있는 사실만 사용하세요.
+- 문서에 없는 경험, 기술, 역할, 성과 또는 수치를 사실처럼 단정하지 마세요.
+- 이미 질문한 내용을 반복하거나 답변 예시와 평가 결과를 노출하지 마세요.
+- 두 개 이상의 질문을 연결하지 말고 자연스러운 한국어 질문 하나만 작성하세요.
+""".strip(),
         ),
         (
             "human",
             "[질문 유형]\n{question_type}\n\n"
             "[현재 평가 역량]\n{current_competency}\n\n"
+            "[연결 상태]\n{alignment_status}\n\n"
             "[역량별 면접 전략]\n{competency_strategy}\n\n"
             "[지원자 정보]\n{candidate_profile}\n\n"
             "[채용공고 정보]\n{jd_analysis}\n\n"
             "[이전 질문]\n{previous_question}\n\n"
             "[이전 답변]\n{current_answer}\n\n"
             "[이전 답변 평가]\n{current_evaluation}\n\n"
-            "[면접 기록]\n{interview_history}",
+            "[면접 기록]\n{interview_history}\n\n"
+            "[검증 보정 지시]\n{validation_feedback}",
         ),
     ]
 )
 
 _question_generation_chain: Any | None = None
+MAX_QUESTION_GENERATION_ATTEMPTS = 2
 
 
 def build_question_generation_chain(model: str | None = None) -> Any:
@@ -101,6 +113,35 @@ def _to_serializable(value: Any) -> Any:
 
 def _json_text(value: Any) -> str:
     return json.dumps(_to_serializable(value), ensure_ascii=False, indent=2)
+
+
+def _normalize_question(question: str) -> str:
+    normalized = re.sub(r"\s+", " ", question).strip()
+    if "?" in normalized:
+        return normalized.split("?", 1)[0].strip() + "?"
+    return normalized + "?"
+
+
+def _question_key(question: str) -> str:
+    return re.sub(r"[\s?]+", "", question).casefold()
+
+
+def _validate_generated_question(
+    question: str,
+    previous_questions: list[str],
+) -> list[str]:
+    """Check deterministic single-question and exact-duplicate rules."""
+
+    errors: list[str] = []
+    if question.count("?") > 1:
+        errors.append("두 개 이상의 질문이 포함되었습니다.")
+
+    normalized = _normalize_question(question)
+    previous_keys = {_question_key(item) for item in previous_questions if item}
+    if _question_key(normalized) in previous_keys:
+        errors.append("이전에 생성한 질문과 중복됩니다.")
+
+    return errors
 
 
 def select_question_context(state: Mapping[str, Any]) -> tuple[str, QuestionType]:
@@ -179,27 +220,49 @@ def question_generation_node(
     )
 
     generation_chain = chain or get_question_generation_chain()
-    generated = generation_chain.invoke(
-        {
-            "question_type": question_type,
-            "current_competency": current_competency,
-            "competency_strategy": _json_text(competency_strategy),
-            "candidate_profile": _json_text(candidate_profile),
-            "jd_analysis": _json_text(jd_analysis),
-            "previous_question": state.get("current_question") or "없음",
-            "current_answer": state.get("current_answer") or "없음",
-            "current_evaluation": _json_text(state.get("current_evaluation", {})),
-            "interview_history": _json_text(
-                list(state.get("interview_history", []))[-10:]
-            ),
-        }
-    )
+    recent_history = list(state.get("interview_history", []))[-10:]
+    previous_questions = [
+        str(item.get("question") or "") for item in recent_history
+    ]
+    if state.get("current_question"):
+        previous_questions.append(str(state["current_question"]))
 
-    question = re.sub(r"\s+", " ", generated.question).strip()
-    if "?" in question:
-        question = question.split("?", 1)[0].strip() + "?"
+    generation_input = {
+        "question_type": question_type,
+        "current_competency": current_competency,
+        "alignment_status": competency_strategy.get(
+            "alignment_status", "UNSPECIFIED"
+        ),
+        "competency_strategy": _json_text(competency_strategy),
+        "candidate_profile": _json_text(candidate_profile),
+        "jd_analysis": _json_text(jd_analysis),
+        "previous_question": state.get("current_question") or "없음",
+        "current_answer": state.get("current_answer") or "없음",
+        "current_evaluation": _json_text(state.get("current_evaluation", {})),
+        "interview_history": _json_text(recent_history),
+        "validation_feedback": "없음",
+    }
+
+    validation_errors: list[str] = []
+    for _ in range(MAX_QUESTION_GENERATION_ATTEMPTS):
+        generated = generation_chain.invoke(generation_input)
+        validation_errors = _validate_generated_question(
+            generated.question,
+            previous_questions,
+        )
+        if not validation_errors:
+            break
+
+        generation_input["validation_feedback"] = (
+            "이전 질문의 다음 오류만 수정하세요: "
+            + " / ".join(validation_errors)
+        )
     else:
-        question += "?"
+        raise ValueError(
+            "질문 생성 검증 실패: " + " / ".join(validation_errors)
+        )
+
+    question = _normalize_question(generated.question)
 
     return {
         "current_question": question,
