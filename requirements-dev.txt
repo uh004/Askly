@@ -1,4 +1,18 @@
 -r requirements.txt
 
+# Notebook / RAG experiments
+jupyterlab
+ipykernel
+langchain-community
+langchain-text-splitters
+langchain-chroma
+chromadb
+python-docx
+docx2txt
+
+# API and evaluation development tools
+httpx
+langsmith
+
 # Test runner
 pytest

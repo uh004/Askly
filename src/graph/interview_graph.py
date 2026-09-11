@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Literal, Mapping
 
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from src.config import MAX_DOCUMENT_PARSING_ATTEMPTS
+from src.config import DATABASE_URL, MAX_DOCUMENT_PARSING_ATTEMPTS
 from src.nodes.answer_evaluation import answer_evaluation_node
 from src.nodes.candidate_jd_analysis import candidate_jd_analysis_node
 from src.nodes.document_parsing import document_parsing_node
@@ -20,6 +19,7 @@ from src.nodes.parsing_validation import (
 )
 from src.nodes.question_generation import question_generation_node
 from src.nodes.user_answer import user_answer_node
+from src.persistence.checkpointer import create_interview_checkpointer
 from src.state import InterviewState
 
 
@@ -124,7 +124,6 @@ def build_interview_graph(
     return builder.compile(checkpointer=checkpointer)
 
 
-# Development-only state store. Replace it with a persistent checkpointer in the API.
-interview_checkpointer = InMemorySaver()
+# DATABASE_URL이 있으면 PostgreSQL, 없으면 로컬 개발용 메모리를 사용합니다.
+interview_checkpointer = create_interview_checkpointer(DATABASE_URL)
 interview_graph = build_interview_graph(checkpointer=interview_checkpointer)
-

@@ -7,6 +7,7 @@
 
 ```text
 src/
+├─ app.py          # Vercel용 FastAPI 진입점
 ├─ config.py       # 모델명과 질문·재시도 제한
 ├─ state.py        # 전체 Graph 공유 상태
 ├─ schemas/        # Pydantic Structured Output
@@ -14,6 +15,7 @@ src/
 ├─ services/       # PDF 및 채용공고 파싱
 ├─ nodes/          # 단계별 LangGraph Node
 ├─ graph/          # 전체 Node 연결과 조건 분기
+├─ persistence/    # 메모리/PostgreSQL Checkpointer 선택
 └─ api/            # FastAPI 앱, 요청·응답 Schema, 면접 Route
 ```
 
@@ -69,7 +71,21 @@ lint·production build를 자동으로 실행합니다.
 
 면접 시작 요청은 `multipart/form-data` 형식으로 `resume_file` PDF와
 `job_posting_url`을 함께 전송합니다. 업로드 파일은 파싱 후 즉시 삭제됩니다.
-현재 세션 상태는 개발용 `InMemorySaver`에 저장되므로 서버를 재시작하면 사라집니다.
+`DATABASE_URL`이 없으면 세션 상태는 개발용 `InMemorySaver`에 저장되어 서버를
+재시작하면 사라집니다. Neon 등 PostgreSQL을 연결하면 세션 상태가 영구 저장됩니다.
+
+## PostgreSQL 세션 저장
+
+Vercel Marketplace에서 Neon을 연결한 뒤 발급된 pooled connection string을
+`DATABASE_URL`에 설정합니다. 처음 연결할 때만 체크포인터 테이블을 생성합니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m tools.setup_postgres_checkpointer
+.\.venv\Scripts\python.exe -m uvicorn src.api.main:app --reload
+```
+
+로컬 개발이나 CI처럼 `DATABASE_URL`이 없는 환경은 별도 설정 없이 메모리 저장소를
+사용합니다. 실제 접속 문자열은 `.env`에만 넣고 Git에는 올리지 않습니다.
 
 ## 검증 구조 한눈에 보기
 

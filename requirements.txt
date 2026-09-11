@@ -1,7 +1,3 @@
-# Notebook
-jupyterlab
-ipykernel
-
 # Environment
 python-dotenv
 
@@ -9,30 +5,20 @@ python-dotenv
 fastapi
 uvicorn[standard]
 python-multipart
-httpx
 
 # LangChain / LangGraph
 langchain
 langchain-openai
-langchain-community
-langchain-text-splitters
 langgraph
-
-# RAG / Vector DB
-langchain-chroma
-chromadb
+langgraph-checkpoint-postgres
+psycopg[binary,pool]
 
 # Document processing
 pypdf
-python-docx
-docx2txt
 
 # Web JD parsing
 beautifulsoup4
 requests
-
-# Evaluation / tracing
-langsmith
 
 # Validation
 pydantic

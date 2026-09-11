@@ -11,6 +11,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+DATABASE_URL = (
+    os.getenv("DATABASE_URL", "").strip()
+    or os.getenv("POSTGRES_URL", "").strip()
+    or None
+)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 UPLOAD_DIR = PROJECT_ROOT / "data" / "uploads"
 MAX_RESUME_UPLOAD_BYTES = 10 * 1024 * 1024
