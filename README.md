@@ -71,6 +71,8 @@ lint·production build를 자동으로 실행합니다.
 
 면접 시작 요청은 `multipart/form-data` 형식으로 `resume_file` PDF와
 `job_posting_url`을 함께 전송합니다. 업로드 파일은 파싱 후 즉시 삭제됩니다.
+로컬에서는 `data/uploads`, Vercel에서는 쓰기 가능한 `/tmp/askly-uploads`를
+임시 경로로 사용합니다.
 `DATABASE_URL`이 없으면 세션 상태는 개발용 `InMemorySaver`에 저장되어 서버를
 재시작하면 사라집니다. Neon 등 PostgreSQL을 연결하면 세션 상태가 영구 저장됩니다.
 

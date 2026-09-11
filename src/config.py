@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -17,7 +18,21 @@ DATABASE_URL = (
     or None
 )
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-UPLOAD_DIR = PROJECT_ROOT / "data" / "uploads"
+
+
+def resolve_upload_dir(environ: Mapping[str, str] | None = None) -> Path:
+    """Return a writable temporary upload directory for each runtime."""
+
+    active_environ = os.environ if environ is None else environ
+    configured_path = active_environ.get("UPLOAD_DIR", "").strip()
+    if configured_path:
+        return Path(configured_path)
+    if active_environ.get("VERCEL"):
+        return Path("/tmp") / "askly-uploads"
+    return PROJECT_ROOT / "data" / "uploads"
+
+
+UPLOAD_DIR = resolve_upload_dir()
 MAX_RESUME_UPLOAD_BYTES = 10 * 1024 * 1024
 
 CORS_ORIGINS = [
