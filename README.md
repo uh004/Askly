@@ -28,6 +28,25 @@ npm.cmd run dev
 프론트엔드 주소는 `http://localhost:3000`이며, 로컬 FastAPI 주소는
 `frontend/.env.local`의 `NEXT_PUBLIC_API_URL`로 설정합니다.
 
+## 테스트와 CI
+
+로컬에서 백엔드 테스트를 실행합니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest
+```
+
+프론트엔드는 `frontend/`에서 검사합니다.
+
+```powershell
+npm.cmd run lint
+npm.cmd run build
+```
+
+GitHub Actions는 Push와 Pull Request마다 백엔드 `pytest`와 프론트엔드
+lint·production build를 자동으로 실행합니다.
+
 [`notebooks/pipeline_v2.ipynb`](notebooks/pipeline_v2.ipynb)는 위 모듈을 불러와
 구조와 실행 방법을 확인하는 용도로 사용합니다. 테스트 코드는 노트북에서 실행하지
 않고 `tests/`와 `evals/`에서 관리합니다. FastAPI와 Next.js는 이 구조 위에 다음
