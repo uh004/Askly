@@ -17,6 +17,17 @@ src/
 └─ api/            # FastAPI 앱, 요청·응답 Schema, 면접 Route
 ```
 
+Next.js 프론트엔드는 `frontend/`에 분리되어 있으며 FastAPI를 직접 호출합니다.
+
+```powershell
+cd frontend
+npm.cmd install
+npm.cmd run dev
+```
+
+프론트엔드 주소는 `http://localhost:3000`이며, 로컬 FastAPI 주소는
+`frontend/.env.local`의 `NEXT_PUBLIC_API_URL`로 설정합니다.
+
 [`notebooks/pipeline_v2.ipynb`](notebooks/pipeline_v2.ipynb)는 위 모듈을 불러와
 구조와 실행 방법을 확인하는 용도로 사용합니다. 테스트 코드는 노트북에서 실행하지
 않고 `tests/`와 `evals/`에서 관리합니다. FastAPI와 Next.js는 이 구조 위에 다음
