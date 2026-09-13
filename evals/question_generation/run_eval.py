@@ -14,17 +14,21 @@ from evals.question_generation.evaluators import (
     question_quality_evaluator,
     route_compliance_evaluator,
 )
-from evals.question_generation.target import question_generation_target
+from evals.question_generation.target import make_question_generation_target
 from src.nodes.question_generation import select_question_context
 
 
-DEFAULT_DATASET_NAME = "askly-question-generation-v1"
+DEFAULT_DATASET_NAME_TEMPLATE = "askly-question-generation-{version}"
 
 
-def validate_locally() -> list[dict]:
+def validate_locally(
+    *,
+    dataset_version: str = "v1",
+    split: str | None = None,
+) -> list[dict]:
     """Validate dataset structure and deterministic routing without API calls."""
 
-    cases = load_cases()
+    cases = load_cases(version=dataset_version, split=split)
     for case in cases:
         competency, question_type = select_question_context(case["inputs"])
         expected = case["reference_outputs"]
@@ -66,18 +70,26 @@ def run_langsmith_experiment(
     dataset_name: str,
     experiment_prefix: str,
     *,
+    dataset_version: str = "v1",
+    split: str | None = None,
+    prompt_version: str = "v1",
     include_diagnostics: bool = False,
 ) -> None:
     require_environment("OPENAI_API_KEY", "LANGSMITH_API_KEY")
     os.environ.setdefault("LANGSMITH_TRACING", "true")
     os.environ.setdefault("LANGSMITH_PROJECT", "askly-agent-eval")
 
-    cases = validate_locally()
+    all_cases = validate_locally(dataset_version=dataset_version)
+    selected_cases = validate_locally(
+        dataset_version=dataset_version,
+        split=split,
+    )
     client = Client(api_key=os.environ["LANGSMITH_API_KEY"])
     dataset, created = ensure_langsmith_dataset(
         client,
         dataset_name=dataset_name,
-        cases=cases,
+        cases=all_cases,
+        dataset_version=dataset_version,
     )
     action = "생성 및 업로드" if created else "기존 Dataset 재사용"
     print(f"LangSmith Dataset: {dataset.name} ({action})")
@@ -87,23 +99,40 @@ def run_langsmith_experiment(
         if include_diagnostics
         else question_quality_evaluator
     )
+    data = dataset_name
+    if split is not None:
+        data = list(
+            client.list_examples(
+                dataset_id=dataset.id,
+                splits=[split],
+            )
+        )
+        if len(data) != len(selected_cases):
+            raise RuntimeError(
+                f"LangSmith {split} split Case 수 불일치: "
+                f"expected={len(selected_cases)}, actual={len(data)}"
+            )
+
     results = client.evaluate(
-        question_generation_target,
-        data=dataset_name,
+        make_question_generation_target(prompt_version),
+        data=data,
         evaluators=[route_compliance_evaluator, quality_evaluator],
         experiment_prefix=experiment_prefix,
         description=(
-            "Askly 질문 생성 v1 진단 포함 평가"
+            f"Askly 질문 생성 {prompt_version} 진단 포함 평가"
             if include_diagnostics
-            else "Askly 질문 생성 v1 핵심 지표 평가"
+            else f"Askly 질문 생성 {prompt_version} 핵심 지표 평가"
         ),
         metadata={
-            "dataset_version": "v1",
+            "dataset_version": dataset_version,
+            "dataset_split": split or "all",
+            "prompt_version": prompt_version,
             "node": "question_generation",
             "evaluation_profile": "diagnostics" if include_diagnostics else "core",
         },
         max_concurrency=1,
     )
+    print(f"LangSmith Experiment: {results.experiment_name}")
     print(results)
 
 
@@ -119,10 +148,12 @@ def main() -> None:
         action="store_true",
         help="LLM 호출 없이 LangSmith API Key 연결만 확인합니다.",
     )
-    parser.add_argument("--dataset-name", default=DEFAULT_DATASET_NAME)
+    parser.add_argument("--dataset-version", choices=("v1", "v2"), default="v1")
+    parser.add_argument("--dataset-name")
+    parser.add_argument("--split", choices=("all", "dev", "holdout"), default="all")
+    parser.add_argument("--prompt-version", choices=("v1", "v2"), default="v1")
     parser.add_argument(
         "--experiment-prefix",
-        default="question-generation-v1-core",
     )
     parser.add_argument(
         "--include-diagnostics",
@@ -132,7 +163,17 @@ def main() -> None:
     args = parser.parse_args()
 
     load_dotenv()
-    cases = validate_locally()
+    selected_split = None if args.split == "all" else args.split
+    dataset_name = args.dataset_name or DEFAULT_DATASET_NAME_TEMPLATE.format(
+        version=args.dataset_version
+    )
+    experiment_prefix = args.experiment_prefix or (
+        f"question-generation-{args.prompt_version}-{args.split}"
+    )
+    cases = validate_locally(
+        dataset_version=args.dataset_version,
+        split=selected_split,
+    )
     print(f"로컬 검증 완료: {len(cases)}개 Case")
 
     if args.check_langsmith:
@@ -144,8 +185,11 @@ def main() -> None:
         return
 
     run_langsmith_experiment(
-        args.dataset_name,
-        args.experiment_prefix,
+        dataset_name,
+        experiment_prefix,
+        dataset_version=args.dataset_version,
+        split=selected_split,
+        prompt_version=args.prompt_version,
         include_diagnostics=args.include_diagnostics,
     )
 

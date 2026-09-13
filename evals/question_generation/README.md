@@ -1,45 +1,57 @@
 # 질문 생성 품질 검증
 
-`question_generation_node`만 독립 실행하여 질문의 근거성, JD 관련성, 개인화와
-Route 준수를 핵심 지표로 평가한다. FOLLOW_UP 적합성과 근거 없는 가정은 실패
-Case 분석용 진단 지표로 유지한다.
+`question_generation_node`만 독립 실행하여 생성 질문의 근거성, JD 관련성,
+개인화, Route 준수를 검증한다.
 
-## 구성
+## Dataset
 
-- `dataset_v1.jsonl`: INITIAL/FOLLOW_UP/NEXT 각 2개, 총 6개 Case
-- `target.py`: 실제 질문 생성 Node 실행 Target
-- `evaluators.py`: 코드 기반 Route 평가와 LLM-as-a-Judge
-- `rubric.md`: Judge 점수 기준
-- `run_eval.py`: 로컬 검증 및 LangSmith Experiment 실행기
+- `dataset_v1.jsonl`: 기존 기본 Case 6개
+- `dataset_v2_additions.jsonl`: 현실적인 Hard Case 24개
+- v2 전체: 30개 (`INITIAL / FOLLOW_UP / NEXT` 각 10개)
+- v2 dev: 21개(각 Route 7개), 프롬프트 분석·수정용
+- v2 holdout: 9개(각 Route 3개), 최종 일반화 확인용
 
-## 실행
+Hard Case에는 서류와 JD의 약한 일치, 서류 정보 부족, 짧은 답변, 여러
+`missing_points`, 근거 없는 기술 가정 위험, 유사 프로젝트 혼동을 포함한다.
 
-API 호출 없이 데이터와 Route 기대값만 검증:
+## 핵심 지표
 
-```powershell
-.\.venv\Scripts\python.exe -m evals.question_generation.run_eval
-```
+- `groundedness`
+- `jd_relevance`
+- `personalization`
+- `route_compliance`
 
-`.env`에 LangSmith Key를 설정한 뒤 LLM 호출 없이 연결 확인:
+LLM Judge는 질문에 실제로 드러난 정보만 평가한다. 입력에 좋은 정보가 있다는
+이유만으로 개인화나 JD 관련성을 높게 주지 않는다. 실패 원인 분석이 필요할 때만
+`followup_relevance`, `unsupported_assumption_free`를 진단 지표로 추가한다.
 
-```powershell
-.\.venv\Scripts\python.exe -m evals.question_generation.run_eval --check-langsmith
-```
+## 실행 순서
 
-OpenAI/LangSmith Key가 모두 설정되면 실제 평가 실행:
-
-```powershell
-.\.venv\Scripts\python.exe -m evals.question_generation.run_eval --run-langsmith
-```
-
-실패 분석용 진단 지표까지 함께 실행:
+로컬 구조와 Route를 먼저 검증한다.
 
 ```powershell
-.\.venv\Scripts\python.exe -m evals.question_generation.run_eval --run-langsmith --include-diagnostics
+.\.venv\Scripts\python.exe -m evals.question_generation.run_eval --dataset-version v2 --split dev
 ```
 
-기본 핵심 지표는 `groundedness`, `jd_relevance`, `personalization`,
-`route_compliance`이다.
+같은 dev Dataset에 v1과 v2 프롬프트를 실행한다.
 
-동일한 Dataset 이름이 이미 있으면 기존 Dataset을 재사용한다. 검증셋 내용을
-바꾼 경우 `--dataset-name askly-question-generation-v2`처럼 새 버전 이름을 사용한다.
+```powershell
+.\.venv\Scripts\python.exe -m evals.question_generation.run_eval --dataset-version v2 --split dev --prompt-version v1 --experiment-prefix question-generation-v1-baseline-dev --run-langsmith
+.\.venv\Scripts\python.exe -m evals.question_generation.run_eval --dataset-version v2 --split dev --prompt-version v2 --experiment-prefix question-generation-v2-improved-dev --run-langsmith
+```
+
+dev 개선을 확인한 뒤 holdout을 각각 한 번 실행한다.
+
+```powershell
+.\.venv\Scripts\python.exe -m evals.question_generation.run_eval --dataset-version v2 --split holdout --prompt-version v1 --experiment-prefix question-generation-v1-baseline-holdout --run-langsmith
+.\.venv\Scripts\python.exe -m evals.question_generation.run_eval --dataset-version v2 --split holdout --prompt-version v2 --experiment-prefix question-generation-v2-improved-holdout --run-langsmith
+```
+
+실제 생성된 두 Experiment 이름을 넣으면 비교표를 출력할 수 있다.
+
+```powershell
+.\.venv\Scripts\python.exe -m evals.compare_experiments --kind question --v1 <v1-experiment-name> --v2 <v2-experiment-name>
+```
+
+LangSmith 실행은 Dataset 내용을 외부 서비스로 전송하므로 실제 개인정보 대신
+합성 또는 비식별 Case만 사용한다.

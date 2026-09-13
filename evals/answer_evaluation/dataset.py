@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -14,11 +15,14 @@ from evals.answer_evaluation.metrics import SCORE_FIELDS
 
 
 DEFAULT_DATASET_PATH = Path(__file__).with_name("dataset_v1.jsonl")
+V2_ADDITIONS_PATH = Path(__file__).with_name("dataset_v2_additions.jsonl")
 QUALITY_LABELS = {"GOOD", "MEDIUM", "POOR"}
 QUESTION_TYPES = {"INITIAL", "FOLLOW_UP", "NEXT"}
+DATASET_VERSIONS = {"v1", "v2"}
+DATASET_SPLITS = {"dev", "holdout"}
 
 
-def load_cases(path: Path = DEFAULT_DATASET_PATH) -> list[dict[str, Any]]:
+def _read_cases(path: Path) -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as file:
         for line_number, raw_line in enumerate(file, start=1):
@@ -61,17 +65,71 @@ def load_cases(path: Path = DEFAULT_DATASET_PATH) -> list[dict[str, Any]]:
                 raise ValueError(f"{path}:{line_number} metadata.case_id가 필요합니다.")
             cases.append(case)
 
+    return cases
+
+
+def load_cases(
+    path: Path | None = None,
+    *,
+    version: str = "v1",
+    split: str | None = None,
+) -> list[dict[str, Any]]:
+    if version not in DATASET_VERSIONS:
+        raise ValueError(f"지원하지 않는 Dataset 버전입니다: {version}")
+    if split is not None and split not in DATASET_SPLITS:
+        raise ValueError(f"지원하지 않는 Dataset split입니다: {split}")
+
+    if path is not None:
+        cases = _read_cases(path)
+    else:
+        cases = _read_cases(DEFAULT_DATASET_PATH)
+        if version == "v2":
+            base_cases = deepcopy(cases)
+            for case in base_cases:
+                case["metadata"]["split"] = "dev"
+                case["metadata"]["dataset_version"] = "v2"
+            cases = base_cases + _read_cases(V2_ADDITIONS_PATH)
+
+    case_ids = [case["metadata"]["case_id"] for case in cases]
+    if len(case_ids) != len(set(case_ids)):
+        raise ValueError("중복된 metadata.case_id가 있습니다.")
+
+    if version == "v2":
+        invalid_splits = {
+            case["metadata"].get("split") for case in cases
+        } - DATASET_SPLITS
+        if invalid_splits:
+            raise ValueError(f"v2 Case의 split이 올바르지 않습니다: {invalid_splits}")
+        if split is not None:
+            cases = [case for case in cases if case["metadata"]["split"] == split]
+
     if not cases:
-        raise ValueError(f"검증 Case가 없습니다: {path}")
+        raise ValueError("검증 Case가 없습니다.")
 
     quality_counts = Counter(
         case["reference_outputs"]["quality_label"] for case in cases
     )
     type_counts = Counter(case["inputs"]["question_type"] for case in cases)
+    pair_counts = Counter(
+        (
+            case["reference_outputs"]["quality_label"],
+            case["inputs"]["question_type"],
+        )
+        for case in cases
+    )
     if set(quality_counts) != QUALITY_LABELS or len(set(quality_counts.values())) != 1:
         raise ValueError(f"품질 등급별 Case가 균형적이지 않습니다: {dict(quality_counts)}")
     if set(type_counts) != QUESTION_TYPES or len(set(type_counts.values())) != 1:
         raise ValueError(f"질문 유형별 Case가 균형적이지 않습니다: {dict(type_counts)}")
+    expected_pairs = {
+        (quality, question_type)
+        for quality in QUALITY_LABELS
+        for question_type in QUESTION_TYPES
+    }
+    if set(pair_counts) != expected_pairs or len(set(pair_counts.values())) != 1:
+        raise ValueError(
+            f"품질 등급×질문 유형 Case가 균형적이지 않습니다: {dict(pair_counts)}"
+        )
     return cases
 
 
@@ -80,14 +138,19 @@ def ensure_langsmith_dataset(
     *,
     dataset_name: str,
     cases: list[dict[str, Any]],
+    dataset_version: str = "v1",
 ) -> tuple[Any, bool]:
     try:
-        return client.read_dataset(dataset_name=dataset_name), False
+        dataset = client.read_dataset(dataset_name=dataset_name)
+        created = False
     except LangSmithNotFoundError:
         dataset = client.create_dataset(
             dataset_name,
-            description="Askly 답변 평가 신뢰성 검증셋: GOOD/MEDIUM/POOR 균형 Case",
-            metadata={"version": "v1", "task": "answer_evaluation"},
+            description=(
+                "Askly 답변 평가 신뢰성 검증셋: GOOD/MEDIUM/POOR 균형 Case "
+                f"({dataset_version})"
+            ),
+            metadata={"version": dataset_version, "task": "answer_evaluation"},
         )
         client.create_examples(
             dataset_id=dataset.id,
@@ -100,4 +163,31 @@ def ensure_langsmith_dataset(
                 for case in cases
             ],
         )
-        return dataset, True
+        created = True
+
+    examples = list(client.list_examples(dataset_id=dataset.id))
+    expected_case_ids = {case["metadata"]["case_id"] for case in cases}
+    actual_case_ids = {
+        example.metadata.get("case_id")
+        for example in examples
+        if example.metadata
+    }
+    if actual_case_ids != expected_case_ids:
+        raise RuntimeError(
+            f"LangSmith Dataset {dataset_name!r}의 Case가 로컬과 다릅니다. "
+            "기존 Dataset을 덮어쓰지 말고 새 버전 이름을 사용하세요."
+        )
+
+    for split_name in sorted(DATASET_SPLITS):
+        example_ids = [
+            example.id
+            for example in examples
+            if example.metadata and example.metadata.get("split") == split_name
+        ]
+        if example_ids:
+            client.update_dataset_splits(
+                dataset_id=dataset.id,
+                split_name=split_name,
+                example_ids=example_ids,
+            )
+    return dataset, created

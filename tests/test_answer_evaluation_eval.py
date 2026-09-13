@@ -57,6 +57,25 @@ class AnswerEvaluationReliabilityTest(unittest.TestCase):
             {"INITIAL": 6, "NEXT": 6, "FOLLOW_UP": 6},
         )
 
+    def test_v2_dataset_and_splits_balance_every_quality_type_pair(self) -> None:
+        all_cases = load_cases(version="v2")
+        dev_cases = load_cases(version="v2", split="dev")
+        holdout_cases = load_cases(version="v2", split="holdout")
+
+        def pair_counts(cases: list[dict]) -> Counter:
+            return Counter(
+                (
+                    case["reference_outputs"]["quality_label"],
+                    case["inputs"]["question_type"],
+                )
+                for case in cases
+            )
+
+        self.assertEqual(len(all_cases), 36)
+        self.assertEqual(set(pair_counts(all_cases).values()), {4})
+        self.assertEqual(set(pair_counts(dev_cases).values()), {3})
+        self.assertEqual(set(pair_counts(holdout_cases).values()), {1})
+
     def test_common_node_runs_for_every_case_with_injected_chain(self) -> None:
         for case in self.cases:
             with self.subTest(case_id=case["metadata"]["case_id"]):
@@ -99,6 +118,41 @@ class AnswerEvaluationReliabilityTest(unittest.TestCase):
         )
         self.assertEqual(summary_by_key["within1_overall"], 1.0)
         self.assertEqual(summary_by_key["mae_overall"], 0.0)
+        self.assertAlmostEqual(summary_by_key["spearman_overall"], 1.0)
+
+    def test_overall_spearman_compares_case_level_answer_scores(self) -> None:
+        fields = (
+            "relevance",
+            "specificity",
+            "logical_structure",
+            "role_clarity",
+            "action_clarity",
+            "result_clarity",
+        )
+        human_rows = [dict(zip(fields, [score] * 6)) for score in (1, 3, 5)]
+        ai_rows = [
+            dict(zip(fields, values))
+            for values in (
+                (2, 5, 4, 3, 2, 1),
+                (1, 5, 2, 3, 5, 2),
+                (3, 3, 1, 5, 3, 5),
+            )
+        ]
+        outputs = [
+            {
+                "scores": scores,
+                "overall_score": calculate_overall_score(scores),
+            }
+            for scores in ai_rows
+        ]
+        references = [{"human_scores": scores} for scores in human_rows]
+
+        summary = answer_reliability_summary(
+            outputs=outputs,
+            reference_outputs=references,
+        )
+        summary_by_key = {metric["key"]: metric["score"] for metric in summary}
+
         self.assertAlmostEqual(summary_by_key["spearman_overall"], 1.0)
 
     def test_schema_truncates_excess_list_items(self) -> None:

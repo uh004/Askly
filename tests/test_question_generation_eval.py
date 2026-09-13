@@ -13,6 +13,7 @@ from evals.question_generation.evaluators import (
 )
 from src.nodes.question_generation import (
     GeneratedInterviewQuestion,
+    _normalize_question,
     question_generation_node,
 )
 
@@ -67,6 +68,25 @@ class QuestionGenerationEvaluationTest(unittest.TestCase):
             for case in self.cases
         )
         self.assertEqual(counts, {"INITIAL": 2, "FOLLOW_UP": 2, "NEXT": 2})
+
+    def test_v2_dataset_and_splits_are_balanced(self) -> None:
+        all_cases = load_cases(version="v2")
+        dev_cases = load_cases(version="v2", split="dev")
+        holdout_cases = load_cases(version="v2", split="holdout")
+
+        def counts(cases: list[dict]) -> Counter:
+            return Counter(
+                case["reference_outputs"]["expected_question_type"]
+                for case in cases
+            )
+
+        self.assertEqual(len(all_cases), 30)
+        self.assertEqual(counts(all_cases), {"INITIAL": 10, "FOLLOW_UP": 10, "NEXT": 10})
+        self.assertEqual(counts(dev_cases), {"INITIAL": 7, "FOLLOW_UP": 7, "NEXT": 7})
+        self.assertEqual(
+            counts(holdout_cases),
+            {"INITIAL": 3, "FOLLOW_UP": 3, "NEXT": 3},
+        )
 
     def test_judge_schema_accepts_empty_assumption_reason(self) -> None:
         judgment = QuestionQualityJudgment.model_validate(
@@ -149,6 +169,12 @@ class QuestionGenerationEvaluationTest(unittest.TestCase):
         self.assertEqual(
             result["current_question"],
             "프로젝트에서 맡은 구체적인 역할을 설명해 주시겠습니까?",
+        )
+
+    def test_question_normalization_replaces_sentence_end_punctuation(self) -> None:
+        self.assertEqual(
+            _normalize_question("프로젝트에서 맡은 역할을 설명해 주세요."),
+            "프로젝트에서 맡은 역할을 설명해 주세요?",
         )
 
 

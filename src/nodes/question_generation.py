@@ -35,7 +35,7 @@ def _normalize_question(question: str) -> str:
     normalized = re.sub(r"\s+", " ", question).strip()
     if "?" in normalized:
         return normalized.split("?", 1)[0].strip() + "?"
-    return normalized + "?"
+    return normalized.rstrip(".!。！？") + "?"
 
 
 def _question_key(question: str) -> str:

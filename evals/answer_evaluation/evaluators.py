@@ -215,10 +215,16 @@ def answer_reliability_summary(
 
     all_ai: list[float] = []
     all_human: list[float] = []
+    ai_overall_scores: list[float] = []
+    human_overall_scores: list[float] = []
     for output, reference in valid_pairs:
         all_ai.extend(float(output["scores"][field]) for field in SCORE_FIELDS)
         all_human.extend(
             float(reference["human_scores"][field]) for field in SCORE_FIELDS
+        )
+        ai_overall_scores.append(calculate_overall_score(output["scores"]))
+        human_overall_scores.append(
+            calculate_overall_score(reference["human_scores"])
         )
 
     total_score_slots = len(outputs) * len(SCORE_FIELDS)
@@ -228,8 +234,8 @@ def answer_reliability_summary(
     within1_overall = within1_hits / total_score_slots
     mae_overall = (absolute_error + invalid_score_slots * 4) / total_score_slots
     spearman_overall = (
-        spearman_correlation(all_ai, all_human) * coverage
-        if len(all_ai) >= 2
+        spearman_correlation(ai_overall_scores, human_overall_scores) * coverage
+        if len(ai_overall_scores) >= 2
         else 0.0
     )
     coverage_comment = f"유효 출력 {len(valid_pairs)}/{len(outputs)} Case"

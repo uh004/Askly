@@ -12,18 +12,21 @@ from evals.answer_evaluation.dataset import ensure_langsmith_dataset, load_cases
 from evals.answer_evaluation.evaluators import (
     answer_diagnostic_summary,
     answer_reliability_summary,
-    answer_support_evaluator,
     score_agreement_evaluator,
 )
-from evals.answer_evaluation.target import answer_evaluation_target
+from evals.answer_evaluation.target import make_answer_evaluation_target
 from src.nodes.answer_evaluation import calculate_overall_score
 
 
-DEFAULT_DATASET_NAME = "askly-answer-evaluation-v1"
+DEFAULT_DATASET_NAME_TEMPLATE = "askly-answer-evaluation-{version}"
 
 
-def validate_locally() -> list[dict]:
-    cases = load_cases()
+def validate_locally(
+    *,
+    dataset_version: str = "v1",
+    split: str | None = None,
+) -> list[dict]:
+    cases = load_cases(version=dataset_version, split=split)
     for case in cases:
         scores = case["reference_outputs"]["human_scores"]
         overall = calculate_overall_score(scores)
@@ -49,45 +52,68 @@ def run_langsmith_experiment(
     dataset_name: str,
     experiment_prefix: str,
     *,
+    dataset_version: str = "v1",
+    split: str | None = None,
+    prompt_version: str = "v1",
     include_diagnostics: bool = False,
 ) -> None:
     require_environment("OPENAI_API_KEY", "LANGSMITH_API_KEY")
     os.environ.setdefault("LANGSMITH_TRACING", "true")
     os.environ.setdefault("LANGSMITH_PROJECT", "askly-agent-eval")
-    cases = validate_locally()
+    all_cases = validate_locally(dataset_version=dataset_version)
+    selected_cases = validate_locally(
+        dataset_version=dataset_version,
+        split=split,
+    )
     client = Client(api_key=os.environ["LANGSMITH_API_KEY"])
     dataset, created = ensure_langsmith_dataset(
-        client, dataset_name=dataset_name, cases=cases
+        client,
+        dataset_name=dataset_name,
+        cases=all_cases,
+        dataset_version=dataset_version,
     )
     action = "생성 및 업로드" if created else "기존 Dataset 재사용"
     print(f"LangSmith Dataset: {dataset.name} ({action})")
-    evaluators = (
-        [score_agreement_evaluator, answer_support_evaluator]
-        if include_diagnostics
-        else []
-    )
+    evaluators = [score_agreement_evaluator] if include_diagnostics else []
     summary_evaluators = [answer_reliability_summary]
     if include_diagnostics:
         summary_evaluators.append(answer_diagnostic_summary)
 
+    data = dataset_name
+    if split is not None:
+        data = list(
+            client.list_examples(
+                dataset_id=dataset.id,
+                splits=[split],
+            )
+        )
+        if len(data) != len(selected_cases):
+            raise RuntimeError(
+                f"LangSmith {split} split Case 수 불일치: "
+                f"expected={len(selected_cases)}, actual={len(data)}"
+            )
+
     results = client.evaluate(
-        answer_evaluation_target,
-        data=dataset_name,
+        make_answer_evaluation_target(prompt_version),
+        data=data,
         evaluators=evaluators,
         summary_evaluators=summary_evaluators,
         experiment_prefix=experiment_prefix,
         description=(
-            "Askly 답변 평가 신뢰성 v1 진단 포함 평가"
+            f"Askly 답변 평가 신뢰성 {prompt_version} 진단 포함 평가"
             if include_diagnostics
-            else "Askly 답변 평가 신뢰성 v1 핵심 지표 평가"
+            else f"Askly 답변 평가 신뢰성 {prompt_version} 핵심 지표 평가"
         ),
         metadata={
-            "dataset_version": "v1",
+            "dataset_version": dataset_version,
+            "dataset_split": split or "all",
+            "prompt_version": prompt_version,
             "node": "answer_evaluation",
             "evaluation_profile": "diagnostics" if include_diagnostics else "core",
         },
         max_concurrency=1,
     )
+    print(f"LangSmith Experiment: {results.experiment_name}")
     print(results)
 
 
@@ -95,9 +121,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-langsmith", action="store_true")
     parser.add_argument("--check-langsmith", action="store_true")
-    parser.add_argument("--dataset-name", default=DEFAULT_DATASET_NAME)
+    parser.add_argument("--dataset-version", choices=("v1", "v2"), default="v1")
+    parser.add_argument("--dataset-name")
+    parser.add_argument("--split", choices=("all", "dev", "holdout"), default="all")
+    parser.add_argument("--prompt-version", choices=("v1", "v2"), default="v1")
     parser.add_argument(
-        "--experiment-prefix", default="answer-evaluation-v1-core"
+        "--experiment-prefix"
     )
     parser.add_argument(
         "--include-diagnostics",
@@ -106,15 +135,28 @@ def main() -> None:
     )
     args = parser.parse_args()
     load_dotenv()
-    cases = validate_locally()
+    selected_split = None if args.split == "all" else args.split
+    dataset_name = args.dataset_name or DEFAULT_DATASET_NAME_TEMPLATE.format(
+        version=args.dataset_version
+    )
+    experiment_prefix = args.experiment_prefix or (
+        f"answer-evaluation-{args.prompt_version}-{args.split}"
+    )
+    cases = validate_locally(
+        dataset_version=args.dataset_version,
+        split=selected_split,
+    )
     print(f"로컬 검증 완료: {len(cases)}개 Case")
     if args.check_langsmith:
         check_langsmith_connection()
         return
     if args.run_langsmith:
         run_langsmith_experiment(
-            args.dataset_name,
-            args.experiment_prefix,
+            dataset_name,
+            experiment_prefix,
+            dataset_version=args.dataset_version,
+            split=selected_split,
+            prompt_version=args.prompt_version,
             include_diagnostics=args.include_diagnostics,
         )
         return
