@@ -6,6 +6,7 @@ from collections import Counter
 
 from evals.answer_evaluation.dataset import load_cases
 from evals.answer_evaluation.evaluators import (
+    answer_diagnostic_summary,
     answer_reliability_summary,
     score_agreement_evaluator,
 )
@@ -92,6 +93,10 @@ class AnswerEvaluationReliabilityTest(unittest.TestCase):
             reference_outputs=references,
         )
         summary_by_key = {metric["key"]: metric["score"] for metric in summary}
+        self.assertEqual(
+            set(summary_by_key),
+            {"within1_overall", "mae_overall", "spearman_overall"},
+        )
         self.assertEqual(summary_by_key["within1_overall"], 1.0)
         self.assertEqual(summary_by_key["mae_overall"], 0.0)
         self.assertAlmostEqual(summary_by_key["spearman_overall"], 1.0)
@@ -178,7 +183,7 @@ class AnswerEvaluationReliabilityTest(unittest.TestCase):
         self.assertEqual(row_metrics[0]["score"], 0)
 
         valid_scores = reference["human_scores"]
-        summary = answer_reliability_summary(
+        summary = answer_diagnostic_summary(
             outputs=[
                 {},
                 {
@@ -190,6 +195,22 @@ class AnswerEvaluationReliabilityTest(unittest.TestCase):
         )
         summary_by_key = {metric["key"]: metric["score"] for metric in summary}
         self.assertEqual(summary_by_key["evaluation_output_coverage"], 0.5)
+
+        core_summary = answer_reliability_summary(
+            outputs=[
+                {},
+                {
+                    "scores": valid_scores,
+                    "overall_score": calculate_overall_score(valid_scores),
+                },
+            ],
+            reference_outputs=[reference, reference],
+        )
+        core_by_key = {
+            metric["key"]: metric["score"] for metric in core_summary
+        }
+        self.assertEqual(core_by_key["within1_overall"], 0.5)
+        self.assertEqual(core_by_key["mae_overall"], 2.0)
 
 
 if __name__ == "__main__":

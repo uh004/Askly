@@ -10,6 +10,7 @@ from langsmith import Client
 
 from evals.question_generation.dataset import ensure_langsmith_dataset, load_cases
 from evals.question_generation.evaluators import (
+    question_quality_diagnostics_evaluator,
     question_quality_evaluator,
     route_compliance_evaluator,
 )
@@ -61,7 +62,12 @@ def check_langsmith_connection() -> None:
     print("LangSmith 연결 확인 완료")
 
 
-def run_langsmith_experiment(dataset_name: str, experiment_prefix: str) -> None:
+def run_langsmith_experiment(
+    dataset_name: str,
+    experiment_prefix: str,
+    *,
+    include_diagnostics: bool = False,
+) -> None:
     require_environment("OPENAI_API_KEY", "LANGSMITH_API_KEY")
     os.environ.setdefault("LANGSMITH_TRACING", "true")
     os.environ.setdefault("LANGSMITH_PROJECT", "askly-agent-eval")
@@ -76,13 +82,26 @@ def run_langsmith_experiment(dataset_name: str, experiment_prefix: str) -> None:
     action = "생성 및 업로드" if created else "기존 Dataset 재사용"
     print(f"LangSmith Dataset: {dataset.name} ({action})")
 
+    quality_evaluator = (
+        question_quality_diagnostics_evaluator
+        if include_diagnostics
+        else question_quality_evaluator
+    )
     results = client.evaluate(
         question_generation_target,
         data=dataset_name,
-        evaluators=[route_compliance_evaluator, question_quality_evaluator],
+        evaluators=[route_compliance_evaluator, quality_evaluator],
         experiment_prefix=experiment_prefix,
-        description="Askly 질문 생성 v1 baseline",
-        metadata={"dataset_version": "v1", "node": "question_generation"},
+        description=(
+            "Askly 질문 생성 v1 진단 포함 평가"
+            if include_diagnostics
+            else "Askly 질문 생성 v1 핵심 지표 평가"
+        ),
+        metadata={
+            "dataset_version": "v1",
+            "node": "question_generation",
+            "evaluation_profile": "diagnostics" if include_diagnostics else "core",
+        },
         max_concurrency=1,
     )
     print(results)
@@ -103,7 +122,12 @@ def main() -> None:
     parser.add_argument("--dataset-name", default=DEFAULT_DATASET_NAME)
     parser.add_argument(
         "--experiment-prefix",
-        default="question-generation-v1-baseline",
+        default="question-generation-v1-core",
+    )
+    parser.add_argument(
+        "--include-diagnostics",
+        action="store_true",
+        help="FOLLOW_UP 적합성과 근거 없는 가정 진단 지표를 함께 기록합니다.",
     )
     args = parser.parse_args()
 
@@ -119,7 +143,11 @@ def main() -> None:
         print("API 호출은 하지 않았습니다. 실행하려면 --run-langsmith를 추가하세요.")
         return
 
-    run_langsmith_experiment(args.dataset_name, args.experiment_prefix)
+    run_langsmith_experiment(
+        args.dataset_name,
+        args.experiment_prefix,
+        include_diagnostics=args.include_diagnostics,
+    )
 
 
 if __name__ == "__main__":

@@ -196,6 +196,12 @@ def answer_reliability_summary(
     outputs: list[dict[str, Any]],
     reference_outputs: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    """Return the three portfolio-facing Human/AI agreement metrics.
+
+    Invalid target outputs are treated as maximum-error predictions so a partial
+    experiment cannot report deceptively strong headline scores.
+    """
+
     if not outputs or len(outputs) != len(reference_outputs):
         raise ValueError("Summary 평가에는 길이가 같은 결과와 Human Label이 필요합니다.")
 
@@ -206,21 +212,76 @@ def answer_reliability_summary(
         and all(field in output["scores"] for field in SCORE_FIELDS)
     ]
     coverage = len(valid_pairs) / len(outputs)
+
+    all_ai: list[float] = []
+    all_human: list[float] = []
+    for output, reference in valid_pairs:
+        all_ai.extend(float(output["scores"][field]) for field in SCORE_FIELDS)
+        all_human.extend(
+            float(reference["human_scores"][field]) for field in SCORE_FIELDS
+        )
+
+    total_score_slots = len(outputs) * len(SCORE_FIELDS)
+    invalid_score_slots = total_score_slots - len(all_ai)
+    within1_hits = sum(abs(ai - human) <= 1 for ai, human in zip(all_ai, all_human))
+    absolute_error = sum(abs(ai - human) for ai, human in zip(all_ai, all_human))
+    within1_overall = within1_hits / total_score_slots
+    mae_overall = (absolute_error + invalid_score_slots * 4) / total_score_slots
+    spearman_overall = (
+        spearman_correlation(all_ai, all_human) * coverage
+        if len(all_ai) >= 2
+        else 0.0
+    )
+    coverage_comment = f"유효 출력 {len(valid_pairs)}/{len(outputs)} Case"
+    return [
+        {
+            "key": "within1_overall",
+            "score": within1_overall,
+            "comment": coverage_comment,
+        },
+        {
+            "key": "mae_overall",
+            "score": mae_overall,
+            "comment": coverage_comment,
+        },
+        {
+            "key": "spearman_overall",
+            "score": spearman_overall,
+            "comment": coverage_comment,
+        },
+    ]
+
+
+def answer_diagnostic_summary(
+    *,
+    outputs: list[dict[str, Any]],
+    reference_outputs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return output coverage and per-score-field diagnostic metrics."""
+
+    if not outputs or len(outputs) != len(reference_outputs):
+        raise ValueError("Summary 평가에는 길이가 같은 결과와 Human Label이 필요합니다.")
+
+    valid_pairs = [
+        (output, reference)
+        for output, reference in zip(outputs, reference_outputs)
+        if isinstance(output.get("scores"), dict)
+        and all(field in output["scores"] for field in SCORE_FIELDS)
+    ]
     results: list[dict[str, Any]] = [
-        {"key": "evaluation_output_coverage", "score": coverage}
+        {
+            "key": "evaluation_output_coverage",
+            "score": len(valid_pairs) / len(outputs),
+        }
     ]
     if not valid_pairs:
         return results
 
-    all_ai: list[float] = []
-    all_human: list[float] = []
     for field in SCORE_FIELDS:
         ai_values = [float(output["scores"][field]) for output, _ in valid_pairs]
         human_values = [
             float(reference["human_scores"][field]) for _, reference in valid_pairs
         ]
-        all_ai.extend(ai_values)
-        all_human.extend(human_values)
         results.extend(
             [
                 {
@@ -241,22 +302,4 @@ def answer_reliability_summary(
                 },
             ]
         )
-
-    results.extend(
-        [
-            {
-                "key": "within1_overall",
-                "score": within_one_agreement(all_ai, all_human),
-            },
-            {"key": "mae_overall", "score": mean_absolute_error(all_ai, all_human)},
-            {
-                "key": "spearman_overall",
-                "score": (
-                    spearman_correlation(all_ai, all_human)
-                    if len(all_ai) >= 2
-                    else 0.0
-                ),
-            },
-        ]
-    )
     return results

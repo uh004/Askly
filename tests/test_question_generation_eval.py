@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import unittest
 from collections import Counter
+from unittest.mock import patch
 
 from evals.question_generation.dataset import load_cases
 from evals.question_generation.evaluators import (
     QuestionQualityJudgment,
+    question_quality_diagnostics_evaluator,
+    question_quality_evaluator,
     route_compliance_evaluator,
 )
 from src.nodes.question_generation import (
@@ -36,6 +39,23 @@ class SequencedQuestionChain:
         )
 
 
+class FakeQuestionJudgeChain:
+    def invoke(self, _: dict) -> QuestionQualityJudgment:
+        return QuestionQualityJudgment.model_validate(
+            {
+                "groundedness": {"score": 5, "reason": "입력 근거와 직접 연결됨"},
+                "jd_relevance": {"score": 4, "reason": "JD 역량과 관련됨"},
+                "personalization": {"score": 5, "reason": "지원자 경험을 반영함"},
+                "followup_relevance": {
+                    "score": 4,
+                    "reason": "직전 답변의 누락 항목을 확인함",
+                },
+                "unsupported_assumption": False,
+                "unsupported_assumption_reason": "",
+            }
+        )
+
+
 class QuestionGenerationEvaluationTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -60,6 +80,39 @@ class QuestionGenerationEvaluationTest(unittest.TestCase):
             }
         )
         self.assertEqual(judgment.unsupported_assumption_reason, "")
+
+    def test_core_and_diagnostic_metric_sets_are_separated(self) -> None:
+        case = self.cases[2]
+        kwargs = {
+            "inputs": case["inputs"],
+            "outputs": {
+                "question": "프로젝트에서 본인이 맡은 역할은 무엇인가요?",
+                "question_type": "FOLLOW_UP",
+                "competency": case["reference_outputs"]["expected_competency"],
+            },
+            "reference_outputs": case["reference_outputs"],
+        }
+        with patch(
+            "evals.question_generation.evaluators._get_judge_chain",
+            return_value=FakeQuestionJudgeChain(),
+        ):
+            core = question_quality_evaluator(**kwargs)
+            diagnostics = question_quality_diagnostics_evaluator(**kwargs)
+
+        self.assertEqual(
+            {metric["key"] for metric in core},
+            {"groundedness", "jd_relevance", "personalization"},
+        )
+        self.assertEqual(
+            {metric["key"] for metric in diagnostics},
+            {
+                "groundedness",
+                "jd_relevance",
+                "personalization",
+                "unsupported_assumption_free",
+                "followup_relevance",
+            },
+        )
 
     def test_node_matches_expected_route_for_every_case(self) -> None:
         for case in self.cases:

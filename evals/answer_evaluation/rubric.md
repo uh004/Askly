@@ -19,7 +19,7 @@ Human Label은 AI 점수를 보기 전에 작성하며, 모든 항목은 1~5점 
 - `action_clarity`: 실제 수행 행동과 판단이 명확한가
 - `result_clarity`: 결과, 성과 또는 학습이 명확한가
 
-## 추가 Judge 항목
+## 실패 Case 진단용 Judge 항목
 
 - `Evidence Groundedness`: 평가 근거가 실제 답변에 존재하는가
 - `Missing Point Validity`: 부족한 점이 질문 의도와 실제 답변에 비추어 타당한가

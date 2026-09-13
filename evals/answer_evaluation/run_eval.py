@@ -10,6 +10,7 @@ from langsmith import Client
 
 from evals.answer_evaluation.dataset import ensure_langsmith_dataset, load_cases
 from evals.answer_evaluation.evaluators import (
+    answer_diagnostic_summary,
     answer_reliability_summary,
     answer_support_evaluator,
     score_agreement_evaluator,
@@ -44,7 +45,12 @@ def check_langsmith_connection() -> None:
     print("LangSmith 연결 확인 완료")
 
 
-def run_langsmith_experiment(dataset_name: str, experiment_prefix: str) -> None:
+def run_langsmith_experiment(
+    dataset_name: str,
+    experiment_prefix: str,
+    *,
+    include_diagnostics: bool = False,
+) -> None:
     require_environment("OPENAI_API_KEY", "LANGSMITH_API_KEY")
     os.environ.setdefault("LANGSMITH_TRACING", "true")
     os.environ.setdefault("LANGSMITH_PROJECT", "askly-agent-eval")
@@ -55,14 +61,31 @@ def run_langsmith_experiment(dataset_name: str, experiment_prefix: str) -> None:
     )
     action = "생성 및 업로드" if created else "기존 Dataset 재사용"
     print(f"LangSmith Dataset: {dataset.name} ({action})")
+    evaluators = (
+        [score_agreement_evaluator, answer_support_evaluator]
+        if include_diagnostics
+        else []
+    )
+    summary_evaluators = [answer_reliability_summary]
+    if include_diagnostics:
+        summary_evaluators.append(answer_diagnostic_summary)
+
     results = client.evaluate(
         answer_evaluation_target,
         data=dataset_name,
-        evaluators=[score_agreement_evaluator, answer_support_evaluator],
-        summary_evaluators=[answer_reliability_summary],
+        evaluators=evaluators,
+        summary_evaluators=summary_evaluators,
         experiment_prefix=experiment_prefix,
-        description="Askly 답변 평가 신뢰성 v1 baseline",
-        metadata={"dataset_version": "v1", "node": "answer_evaluation"},
+        description=(
+            "Askly 답변 평가 신뢰성 v1 진단 포함 평가"
+            if include_diagnostics
+            else "Askly 답변 평가 신뢰성 v1 핵심 지표 평가"
+        ),
+        metadata={
+            "dataset_version": "v1",
+            "node": "answer_evaluation",
+            "evaluation_profile": "diagnostics" if include_diagnostics else "core",
+        },
         max_concurrency=1,
     )
     print(results)
@@ -74,7 +97,12 @@ def main() -> None:
     parser.add_argument("--check-langsmith", action="store_true")
     parser.add_argument("--dataset-name", default=DEFAULT_DATASET_NAME)
     parser.add_argument(
-        "--experiment-prefix", default="answer-evaluation-v1-baseline"
+        "--experiment-prefix", default="answer-evaluation-v1-core"
+    )
+    parser.add_argument(
+        "--include-diagnostics",
+        action="store_true",
+        help="항목별 점수 오차와 평가 근거 진단 지표를 함께 기록합니다.",
     )
     args = parser.parse_args()
     load_dotenv()
@@ -84,7 +112,11 @@ def main() -> None:
         check_langsmith_connection()
         return
     if args.run_langsmith:
-        run_langsmith_experiment(args.dataset_name, args.experiment_prefix)
+        run_langsmith_experiment(
+            args.dataset_name,
+            args.experiment_prefix,
+            include_diagnostics=args.include_diagnostics,
+        )
         return
     print("API 호출은 하지 않았습니다. 실행하려면 --run-langsmith를 추가하세요.")
 

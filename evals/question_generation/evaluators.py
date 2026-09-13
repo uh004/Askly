@@ -90,11 +90,12 @@ def route_compliance_evaluator(
     }
 
 
-def question_quality_evaluator(
+def _question_quality_results(
     *,
     inputs: dict[str, Any],
     outputs: dict[str, Any],
     reference_outputs: dict[str, Any],
+    include_diagnostics: bool,
     **_: Any,
 ) -> list[dict[str, Any]]:
     """Score semantic quality with one structured LLM judge call."""
@@ -133,13 +134,18 @@ def question_quality_evaluator(
             "score": judgment.personalization.score,
             "comment": judgment.personalization.reason,
         },
+    ]
+
+    if not include_diagnostics:
+        return results
+
+    results.append(
         {
             "key": "unsupported_assumption_free",
             "score": 0 if judgment.unsupported_assumption else 1,
             "comment": assumption_reason,
-        },
-    ]
-
+        }
+    )
     if reference_outputs.get("expected_question_type") == "FOLLOW_UP":
         followup = judgment.followup_relevance
         results.append(
@@ -155,3 +161,39 @@ def question_quality_evaluator(
         )
 
     return results
+
+
+def question_quality_evaluator(
+    *,
+    inputs: dict[str, Any],
+    outputs: dict[str, Any],
+    reference_outputs: dict[str, Any],
+    **kwargs: Any,
+) -> list[dict[str, Any]]:
+    """Return the three portfolio-facing semantic quality metrics."""
+
+    return _question_quality_results(
+        inputs=inputs,
+        outputs=outputs,
+        reference_outputs=reference_outputs,
+        include_diagnostics=False,
+        **kwargs,
+    )
+
+
+def question_quality_diagnostics_evaluator(
+    *,
+    inputs: dict[str, Any],
+    outputs: dict[str, Any],
+    reference_outputs: dict[str, Any],
+    **kwargs: Any,
+) -> list[dict[str, Any]]:
+    """Return core metrics plus failure-analysis diagnostics."""
+
+    return _question_quality_results(
+        inputs=inputs,
+        outputs=outputs,
+        reference_outputs=reference_outputs,
+        include_diagnostics=True,
+        **kwargs,
+    )

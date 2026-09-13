@@ -52,10 +52,6 @@ def router_classification_summary(
             "score": sum(class_scores.values()) / len(class_scores),
         },
     ]
-    results.extend(
-        {"key": f"f1_{route.lower()}", "score": score}
-        for route, score in class_scores.items()
-    )
     for expected_route in ROUTE_ORDER:
         for predicted_route in ROUTE_ORDER:
             count = sum(
@@ -71,3 +67,24 @@ def router_classification_summary(
                 }
             )
     return results
+
+
+def router_diagnostic_summary(
+    *,
+    outputs: list[dict[str, Any]],
+    reference_outputs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return per-route F1 scores for failure analysis."""
+
+    if not outputs or len(outputs) != len(reference_outputs):
+        raise ValueError("Summary 평가에는 길이가 같은 Router 결과와 정답이 필요합니다.")
+
+    predicted = [str(output.get("route")) for output in outputs]
+    expected = [str(reference.get("expected_route")) for reference in reference_outputs]
+    return [
+        {
+            "key": f"f1_{route.lower()}",
+            "score": _class_f1(expected, predicted, route),
+        }
+        for route in ROUTE_ORDER
+    ]

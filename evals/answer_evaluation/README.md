@@ -7,7 +7,7 @@
 
 - `dataset_v1.jsonl`: GOOD/MEDIUM/POOR 각 6개, 총 18개 Case
 - `target.py`: 실제 답변 평가 Node 실행
-- `evaluators.py`: 점수 일치도, 근거성 Judge, Dataset 전체 Summary
+- `evaluators.py`: 핵심 점수 일치도와 실패 분석용 진단 지표
 - `metrics.py`: Within-1, MAE, Spearman 계산
 - `rubric.md`: Human Label 기준
 
@@ -19,5 +19,10 @@
 .\.venv\Scripts\python.exe -m evals.answer_evaluation.run_eval --run-langsmith
 ```
 
-LangSmith에서는 `within1_overall`, `mae_overall`, `spearman_overall`을 먼저 보고,
-점수 차이가 큰 Case와 세부 항목을 확인한다.
+기본 실행은 `within1_overall`, `mae_overall`, `spearman_overall`만 Summary 핵심
+지표로 기록한다. 항목별 오차, 출력 Coverage, 평가 근거성과 누락 항목 타당성까지
+확인하려면 다음과 같이 실행한다.
+
+```powershell
+.\.venv\Scripts\python.exe -m evals.answer_evaluation.run_eval --run-langsmith --include-diagnostics
+```

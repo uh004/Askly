@@ -4,7 +4,10 @@ import unittest
 from collections import Counter
 
 from evals.router.dataset import load_cases
-from evals.router.evaluators import router_classification_summary
+from evals.router.evaluators import (
+    router_classification_summary,
+    router_diagnostic_summary,
+)
 from evals.router.target import router_target
 from src.nodes.interview_review import interview_review_node
 
@@ -39,9 +42,21 @@ class RouterEvaluationTest(unittest.TestCase):
         by_key = {metric["key"]: metric["score"] for metric in summary}
         self.assertEqual(by_key["accuracy"], 1.0)
         self.assertEqual(by_key["macro_f1"], 1.0)
+        self.assertNotIn("f1_follow_up", by_key)
         self.assertEqual(by_key["cm_follow_up_to_follow_up"], 6)
         self.assertEqual(by_key["cm_next_to_next"], 6)
         self.assertEqual(by_key["cm_end_to_end"], 6)
+
+        diagnostics = router_diagnostic_summary(
+            outputs=outputs,
+            reference_outputs=references,
+        )
+        diagnostic_by_key = {
+            metric["key"]: metric["score"] for metric in diagnostics
+        }
+        self.assertEqual(diagnostic_by_key["f1_follow_up"], 1.0)
+        self.assertEqual(diagnostic_by_key["f1_next"], 1.0)
+        self.assertEqual(diagnostic_by_key["f1_end"], 1.0)
 
     def test_invalid_states_raise_clear_errors(self) -> None:
         valid = dict(self.cases[0]["inputs"])

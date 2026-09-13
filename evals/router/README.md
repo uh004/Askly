@@ -7,7 +7,7 @@
 
 - `dataset_v1.jsonl`: FOLLOW_UP/NEXT/END 각 6개, 총 18개 경계값 Case
 - `target.py`: 실제 Router Node 실행
-- `evaluators.py`: Accuracy, Macro F1, 클래스별 F1, Confusion Matrix
+- `evaluators.py`: Accuracy, Macro F1, Confusion Matrix와 진단용 클래스별 F1
 - `policy.md`: 현재 Router 정책과 임계값
 
 ## 실행
@@ -16,6 +16,12 @@
 .\.venv\Scripts\python.exe -m evals.router.run_eval
 .\.venv\Scripts\python.exe -m evals.router.run_eval --check-langsmith
 .\.venv\Scripts\python.exe -m evals.router.run_eval --run-langsmith
+```
+
+Route별 F1까지 실패 분석용으로 기록하려면 다음과 같이 실행한다.
+
+```powershell
+.\.venv\Scripts\python.exe -m evals.router.run_eval --run-langsmith --include-diagnostics
 ```
 
 Router는 결정론적이므로 기준 성능은 `Accuracy=1.0`, `Macro F1=1.0`이다.
