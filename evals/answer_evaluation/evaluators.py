@@ -1,75 +1,11 @@
-"""Human-score agreement and answer-grounding evaluators."""
+"""Reference-score agreement evaluators for answer evaluation."""
 
 from __future__ import annotations
 
-import json
-import os
 from typing import Any
 
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field
-
-from evals.answer_evaluation.metrics import (
-    SCORE_FIELDS,
-    mean_absolute_error,
-    spearman_correlation,
-    within_one_agreement,
-)
+from evals.answer_evaluation.metrics import SCORE_FIELDS, mean_absolute_error
 from src.nodes.answer_evaluation import calculate_overall_score
-
-
-class JudgeScore(BaseModel):
-    score: int = Field(ge=1, le=5)
-    reason: str = Field(default="", max_length=500)
-
-
-class AnswerSupportJudgment(BaseModel):
-    evidence_groundedness: JudgeScore
-    missing_point_validity: JudgeScore
-
-
-_support_judge_chain: Any | None = None
-
-
-def _build_support_judge_chain() -> Any:
-    llm = ChatOpenAI(
-        model=os.getenv("EVAL_JUDGE_MODEL", "gpt-4o-mini"),
-        temperature=0,
-    )
-    structured_llm = llm.with_structured_output(
-        AnswerSupportJudgment,
-        method="function_calling",
-        include_raw=False,
-    )
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                "당신은 면접 답변 평가 결과의 근거성을 검증하는 심사자입니다. "
-                "Evidence Groundedness는 answer_evidence와 평가 설명이 실제 사용자 "
-                "답변에 근거하면 5점, 답변에 없는 사실을 근거로 사용하면 1점입니다. "
-                "답변에 인용할 내용이 없어 evidence가 빈 목록인 것은 적절할 수 있습니다. "
-                "Missing Point Validity는 missing_points가 질문 의도, 검증 항목, 실제 "
-                "답변에서 빠진 내용을 정확히 지적하면 5점, 이미 답한 내용이나 질문과 "
-                "무관한 내용을 부족하다고 하면 1점입니다. 입력에 없는 사실을 만들지 마세요.",
-            ),
-            (
-                "human",
-                "[Node 입력]\n{inputs}\n\n"
-                "[AI 평가 결과]\n{outputs}\n\n"
-                "[Human 기준]\n{reference_outputs}",
-            ),
-        ]
-    )
-    return prompt | structured_llm
-
-
-def _get_support_judge_chain() -> Any:
-    global _support_judge_chain
-    if _support_judge_chain is None:
-        _support_judge_chain = _build_support_judge_chain()
-    return _support_judge_chain
 
 
 def score_agreement_evaluator(
@@ -79,7 +15,7 @@ def score_agreement_evaluator(
     **_: Any,
 ) -> list[dict[str, Any]]:
     ai_scores = outputs.get("scores")
-    human_scores = reference_outputs["human_scores"]
+    reference_scores = reference_outputs["reference_scores"]
     if not isinstance(ai_scores, dict) or any(
         field not in ai_scores for field in SCORE_FIELDS
     ):
@@ -88,11 +24,6 @@ def score_agreement_evaluator(
                 "key": "evaluation_output_valid",
                 "score": 0,
                 "comment": "Target 출력에 완전한 scores가 없습니다.",
-            },
-            {
-                "key": "within_1_agreement_case",
-                "score": 0,
-                "comment": "Target 실패로 점수를 비교할 수 없습니다.",
             },
             {
                 "key": "mae_case",
@@ -107,14 +38,14 @@ def score_agreement_evaluator(
         ]
 
     ai_values = [float(ai_scores[field]) for field in SCORE_FIELDS]
-    human_values = [float(human_scores[field]) for field in SCORE_FIELDS]
+    reference_values = [float(reference_scores[field]) for field in SCORE_FIELDS]
     differences = {
-        field: abs(float(ai_scores[field]) - float(human_scores[field]))
+        field: abs(float(ai_scores[field]) - float(reference_scores[field]))
         for field in SCORE_FIELDS
     }
-    details = ", ".join(f"{field}={gap:g}" for field, gap in differences.items())
     expected_overall = calculate_overall_score(ai_scores)
     overall_matches = abs(float(outputs["overall_score"]) - expected_overall) < 0.05
+    details = ", ".join(f"{field}={gap:g}" for field, gap in differences.items())
     return [
         {
             "key": "evaluation_output_valid",
@@ -122,13 +53,8 @@ def score_agreement_evaluator(
             "comment": "6개 세부 점수가 모두 생성되었습니다.",
         },
         {
-            "key": "within_1_agreement_case",
-            "score": within_one_agreement(ai_values, human_values),
-            "comment": f"항목별 절대 오차: {details}",
-        },
-        {
             "key": "mae_case",
-            "score": mean_absolute_error(ai_values, human_values),
+            "score": mean_absolute_error(ai_values, reference_values),
             "comment": f"항목별 절대 오차: {details}",
         },
         {
@@ -141,53 +67,17 @@ def score_agreement_evaluator(
     ]
 
 
-def answer_support_evaluator(
-    *,
-    inputs: dict[str, Any],
-    outputs: dict[str, Any],
-    reference_outputs: dict[str, Any],
-    **_: Any,
-) -> list[dict[str, Any]]:
-    if not isinstance(outputs.get("scores"), dict):
-        return [
-            {
-                "key": "evidence_groundedness",
-                "score": 1,
-                "comment": "Target 실패로 평가 근거를 확인할 수 없습니다.",
-            },
-            {
-                "key": "missing_point_validity",
-                "score": 1,
-                "comment": "Target 실패로 누락 항목을 확인할 수 없습니다.",
-            },
-        ]
-
-    judgment: AnswerSupportJudgment = _get_support_judge_chain().invoke(
-        {
-            "inputs": json.dumps(inputs, ensure_ascii=False, indent=2),
-            "outputs": json.dumps(outputs, ensure_ascii=False, indent=2),
-            "reference_outputs": json.dumps(
-                reference_outputs, ensure_ascii=False, indent=2
-            ),
-        }
-    )
-    evidence_reason = (
-        judgment.evidence_groundedness.reason.strip() or "평가 이유가 제공되지 않았습니다."
-    )
-    missing_reason = (
-        judgment.missing_point_validity.reason.strip() or "평가 이유가 제공되지 않았습니다."
-    )
+def _valid_pairs(
+    outputs: list[dict[str, Any]],
+    reference_outputs: list[dict[str, Any]],
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    if not outputs or len(outputs) != len(reference_outputs):
+        raise ValueError("Summary 평가에는 길이가 같은 결과와 Reference Score가 필요합니다.")
     return [
-        {
-            "key": "evidence_groundedness",
-            "score": judgment.evidence_groundedness.score,
-            "comment": evidence_reason,
-        },
-        {
-            "key": "missing_point_validity",
-            "score": judgment.missing_point_validity.score,
-            "comment": missing_reason,
-        },
+        (output, reference)
+        for output, reference in zip(outputs, reference_outputs)
+        if isinstance(output.get("scores"), dict)
+        and all(field in output["scores"] for field in SCORE_FIELDS)
     ]
 
 
@@ -196,65 +86,29 @@ def answer_reliability_summary(
     outputs: list[dict[str, Any]],
     reference_outputs: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Return the three portfolio-facing Human/AI agreement metrics.
+    """Return the portfolio-facing overall MAE.
 
-    Invalid target outputs are treated as maximum-error predictions so a partial
-    experiment cannot report deceptively strong headline scores.
+    Every repeated output contributes separately. Invalid outputs receive the
+    maximum possible 4-point error so failures cannot improve the result.
     """
 
-    if not outputs or len(outputs) != len(reference_outputs):
-        raise ValueError("Summary 평가에는 길이가 같은 결과와 Human Label이 필요합니다.")
-
-    valid_pairs = [
-        (output, reference)
-        for output, reference in zip(outputs, reference_outputs)
-        if isinstance(output.get("scores"), dict)
-        and all(field in output["scores"] for field in SCORE_FIELDS)
-    ]
-    coverage = len(valid_pairs) / len(outputs)
-
-    all_ai: list[float] = []
-    all_human: list[float] = []
-    ai_overall_scores: list[float] = []
-    human_overall_scores: list[float] = []
-    for output, reference in valid_pairs:
-        all_ai.extend(float(output["scores"][field]) for field in SCORE_FIELDS)
-        all_human.extend(
-            float(reference["human_scores"][field]) for field in SCORE_FIELDS
-        )
-        ai_overall_scores.append(calculate_overall_score(output["scores"]))
-        human_overall_scores.append(
-            calculate_overall_score(reference["human_scores"])
-        )
-
+    valid_pairs = _valid_pairs(outputs, reference_outputs)
     total_score_slots = len(outputs) * len(SCORE_FIELDS)
-    invalid_score_slots = total_score_slots - len(all_ai)
-    within1_hits = sum(abs(ai - human) <= 1 for ai, human in zip(all_ai, all_human))
-    absolute_error = sum(abs(ai - human) for ai, human in zip(all_ai, all_human))
-    within1_overall = within1_hits / total_score_slots
-    mae_overall = (absolute_error + invalid_score_slots * 4) / total_score_slots
-    spearman_overall = (
-        spearman_correlation(ai_overall_scores, human_overall_scores) * coverage
-        if len(ai_overall_scores) >= 2
-        else 0.0
+    valid_score_slots = len(valid_pairs) * len(SCORE_FIELDS)
+    absolute_error = sum(
+        abs(float(output["scores"][field]) - float(reference["reference_scores"][field]))
+        for output, reference in valid_pairs
+        for field in SCORE_FIELDS
     )
-    coverage_comment = f"유효 출력 {len(valid_pairs)}/{len(outputs)} Case"
+    mae_overall = (
+        absolute_error + (total_score_slots - valid_score_slots) * 4
+    ) / total_score_slots
     return [
-        {
-            "key": "within1_overall",
-            "score": within1_overall,
-            "comment": coverage_comment,
-        },
         {
             "key": "mae_overall",
             "score": mae_overall,
-            "comment": coverage_comment,
-        },
-        {
-            "key": "spearman_overall",
-            "score": spearman_overall,
-            "comment": coverage_comment,
-        },
+            "comment": f"유효 출력 {len(valid_pairs)}/{len(outputs)}회",
+        }
     ]
 
 
@@ -263,49 +117,29 @@ def answer_diagnostic_summary(
     outputs: list[dict[str, Any]],
     reference_outputs: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Return output coverage and per-score-field diagnostic metrics."""
+    """Return output coverage and the six dimension-level MAEs."""
 
-    if not outputs or len(outputs) != len(reference_outputs):
-        raise ValueError("Summary 평가에는 길이가 같은 결과와 Human Label이 필요합니다.")
-
-    valid_pairs = [
-        (output, reference)
-        for output, reference in zip(outputs, reference_outputs)
-        if isinstance(output.get("scores"), dict)
-        and all(field in output["scores"] for field in SCORE_FIELDS)
-    ]
+    valid_pairs = _valid_pairs(outputs, reference_outputs)
     results: list[dict[str, Any]] = [
         {
             "key": "evaluation_output_coverage",
             "score": len(valid_pairs) / len(outputs),
         }
     ]
-    if not valid_pairs:
-        return results
-
+    total_attempts = len(outputs)
     for field in SCORE_FIELDS:
-        ai_values = [float(output["scores"][field]) for output, _ in valid_pairs]
-        human_values = [
-            float(reference["human_scores"][field]) for _, reference in valid_pairs
-        ]
-        results.extend(
-            [
-                {
-                    "key": f"within1_{field}",
-                    "score": within_one_agreement(ai_values, human_values),
-                },
-                {
-                    "key": f"mae_{field}",
-                    "score": mean_absolute_error(ai_values, human_values),
-                },
-                {
-                    "key": f"spearman_{field}",
-                    "score": (
-                        spearman_correlation(ai_values, human_values)
-                        if len(ai_values) >= 2
-                        else 0.0
-                    ),
-                },
-            ]
+        absolute_error = sum(
+            abs(
+                float(output["scores"][field])
+                - float(reference["reference_scores"][field])
+            )
+            for output, reference in valid_pairs
+        )
+        invalid_attempts = total_attempts - len(valid_pairs)
+        results.append(
+            {
+                "key": f"mae_{field}",
+                "score": (absolute_error + invalid_attempts * 4) / total_attempts,
+            }
         )
     return results

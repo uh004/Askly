@@ -1,24 +1,25 @@
 # 답변 평가 신뢰성 검증
 
-동일한 면접 답변을 Human Label과 `answer_evaluation_node`가 각각 평가했을 때
-6개 항목의 점수와 답변 전체 품질 순서가 얼마나 일치하는지 검증한다.
+같은 답변에 대해 미리 확정한 6개 Reference Score와
+`answer_evaluation_node`의 점수 차이를 검증한다.
 
 ## Dataset
 
-- `dataset_v1.jsonl`: 기존 18개
-- `dataset_v2_additions.jsonl`: 경계·혼합 품질 Case 18개
-- v2 전체: 36개 (`GOOD / MEDIUM / POOR` 각 12개)
-- 품질 3종 × 질문 유형 3종의 각 조합: 4개
-- v2 dev: 27개(각 조합 3개), Rubric·프롬프트 수정용
-- v2 holdout: 9개(각 조합 1개), 최종 일반화 확인용
+| Suite | Case 수 | 구성 | 용도 |
+|---|---:|---|---|
+| `regression` | 36 | 품질·질문 유형 각 12 | Prompt 수정과 회귀 확인 |
+| `final_holdout` | 30 | GOOD/MEDIUM/POOR 각 10, 질문 유형 각 10 | 최종 일반화 확인 |
 
-## 핵심 지표
+Final Holdout은 품질×질문 유형 9개 조합을 각 3~4건으로 구성했다. 답변 길이만
+달리하지 않고 관련성, 구체성, 역할, 행동, 결과 중 특정 요소만 약한 사례와 질문에서
+벗어난 사례를 포함한다.
 
-- `within1_overall`: 6개 항목별 Human-AI 차이가 ±1 이내인 비율
-- `mae_overall`: 6개 항목별 평균 절대 오차
-- `spearman_overall`: Case별 종합 점수로 계산한 답변 품질 순위 상관
+## 지표
 
-오차 분석에서는 다음 6개 항목별 MAE, Within-1, Spearman을 확인한다.
+대표 지표는 `mae_overall` 하나다. 6개 항목에서 Reference와 AI 점수의 절대 차이를
+모두 평균하며 낮을수록 좋다.
+
+진단용으로 다음 6개 항목별 MAE와 출력 성공률을 확인한다.
 
 - `relevance`
 - `specificity`
@@ -27,34 +28,43 @@
 - `action_clarity`
 - `result_clarity`
 
-## 실행 순서
+잘못된 Structured Output은 제외하지 않고 4점 오차로 계산한다.
 
-로컬 Dataset을 먼저 검증한다.
+## Reference 검토
 
-```powershell
-.\.venv\Scripts\python.exe -m evals.answer_evaluation.run_eval --dataset-version v2 --split dev
-```
-
-동일한 dev Dataset으로 v1과 v2를 실행한다. 항목별 오차를 남기기 위해 진단
-실험을 사용한다.
+Final Holdout의 초기 점수는 Rubric으로 작성한 초안이다. AI 평가를 실행하기 전에
+아래 명령으로 30건을 읽고, 그대로 승인하거나 점수를 고친다.
 
 ```powershell
-.\.venv\Scripts\python.exe -m evals.answer_evaluation.run_eval --dataset-version v2 --split dev --prompt-version v1 --experiment-prefix answer-evaluation-v1-baseline-dev --include-diagnostics --run-langsmith
-.\.venv\Scripts\python.exe -m evals.answer_evaluation.run_eval --dataset-version v2 --split dev --prompt-version v2 --experiment-prefix answer-evaluation-v2-improved-dev --include-diagnostics --run-langsmith
+.\.venv\Scripts\python.exe -m tools.review_answer_holdout
 ```
 
-dev 결과에서 오차가 큰 항목만 수정한 후 holdout을 각각 한 번 실행한다.
+진행 상태만 확인하려면:
 
 ```powershell
-.\.venv\Scripts\python.exe -m evals.answer_evaluation.run_eval --dataset-version v2 --split holdout --prompt-version v1 --experiment-prefix answer-evaluation-v1-baseline-holdout --run-langsmith
-.\.venv\Scripts\python.exe -m evals.answer_evaluation.run_eval --dataset-version v2 --split holdout --prompt-version v2 --experiment-prefix answer-evaluation-v2-improved-holdout --run-langsmith
+.\.venv\Scripts\python.exe -m tools.review_answer_holdout --status
 ```
 
-실제 생성된 두 진단 Experiment 이름으로 전체·항목별 비교표를 출력한다.
+`a`는 현재 점수 승인, `e`는 수정 후 승인, `s`는 건너뛰기, `q`는 저장 후
+종료다. 모든 Case가 승인되지 않으면 Final Holdout 실행기는 중단된다.
+
+## 실행
+
+로컬 구조 확인:
 
 ```powershell
-.\.venv\Scripts\python.exe -m evals.compare_experiments --kind answer --v1 <v1-experiment-name> --v2 <v2-experiment-name> --include-dimensions
+.\.venv\Scripts\python.exe -m evals.answer_evaluation.run_eval --suite regression
+.\.venv\Scripts\python.exe -m evals.answer_evaluation.run_eval --suite final_holdout
 ```
 
-LangSmith 실행은 Dataset 내용을 외부 서비스로 전송하므로 실제 개인정보 대신
-합성 또는 비식별 Case만 사용한다.
+개발 중 Regression 실험:
+
+```powershell
+.\.venv\Scripts\python.exe -m evals.answer_evaluation.run_eval --suite regression --prompt-version v2 --num-repetitions 3 --include-diagnostics --run-langsmith
+```
+
+Reference 승인과 Prompt 동결 후 Final Holdout:
+
+```powershell
+.\.venv\Scripts\python.exe -m evals.answer_evaluation.run_eval --suite final_holdout --prompt-version v2 --num-repetitions 3 --include-diagnostics --confirm-reference-reviewed --run-langsmith
+```

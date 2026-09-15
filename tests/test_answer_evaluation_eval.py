@@ -4,12 +4,13 @@ import json
 import unittest
 from collections import Counter
 
-from evals.answer_evaluation.dataset import load_cases
+from evals.answer_evaluation.dataset import load_cases, pending_reference_reviews
 from evals.answer_evaluation.evaluators import (
     answer_diagnostic_summary,
     answer_reliability_summary,
     score_agreement_evaluator,
 )
+from evals.answer_evaluation.metrics import SCORE_FIELDS
 from src.nodes.answer_evaluation import (
     AnswerEvaluationResult,
     AnswerEvaluationScores,
@@ -25,7 +26,7 @@ class FakeAnswerEvaluationChain:
     def invoke(self, inputs: dict) -> AnswerEvaluationResult:
         self.calls.append(inputs)
         return AnswerEvaluationResult(
-            summary="질문 의도와 관련된 내용을 일부 구체적으로 설명했습니다.",
+            summary="질문 의도와 관련된 내용을 구체적으로 설명했습니다.",
             scores=AnswerEvaluationScores(
                 relevance=3,
                 specificity=3,
@@ -34,7 +35,7 @@ class FakeAnswerEvaluationChain:
                 action_clarity=3,
                 result_clarity=3,
             ),
-            strengths=["질문과 관련된 내용을 답변함"],
+            strengths=["질문과 관련된 내용을 답함"],
             improvement_points=["결과를 더 구체화할 필요가 있음"],
             missing_points=["정량 결과"],
             answer_evidence=["구체적으로 설명"],
@@ -44,54 +45,78 @@ class FakeAnswerEvaluationChain:
 class AnswerEvaluationReliabilityTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.cases = load_cases()
+        cls.regression_cases = load_cases(suite="regression")
+        cls.holdout_cases = load_cases(suite="final_holdout")
 
-    def test_dataset_balances_quality_and_question_type(self) -> None:
-        quality = Counter(
-            case["reference_outputs"]["quality_label"] for case in self.cases
-        )
-        question_types = Counter(case["inputs"]["question_type"] for case in self.cases)
-        self.assertEqual(quality, {"GOOD": 6, "MEDIUM": 6, "POOR": 6})
+    @staticmethod
+    def _quality_counts(cases: list[dict]) -> Counter:
+        return Counter(case["reference_outputs"]["quality_label"] for case in cases)
+
+    @staticmethod
+    def _type_counts(cases: list[dict]) -> Counter:
+        return Counter(case["inputs"]["question_type"] for case in cases)
+
+    def test_regression_dataset_keeps_existing_36_cases(self) -> None:
+        self.assertEqual(len(self.regression_cases), 36)
         self.assertEqual(
-            question_types,
-            {"INITIAL": 6, "NEXT": 6, "FOLLOW_UP": 6},
+            self._quality_counts(self.regression_cases),
+            {"GOOD": 12, "MEDIUM": 12, "POOR": 12},
+        )
+        self.assertEqual(
+            self._type_counts(self.regression_cases),
+            {"INITIAL": 12, "NEXT": 12, "FOLLOW_UP": 12},
         )
 
-    def test_v2_dataset_and_splits_balance_every_quality_type_pair(self) -> None:
-        all_cases = load_cases(version="v2")
-        dev_cases = load_cases(version="v2", split="dev")
-        holdout_cases = load_cases(version="v2", split="holdout")
+    def test_final_holdout_has_balanced_margins_and_pairs(self) -> None:
+        self.assertEqual(len(self.holdout_cases), 30)
+        self.assertEqual(
+            self._quality_counts(self.holdout_cases),
+            {"GOOD": 10, "MEDIUM": 10, "POOR": 10},
+        )
+        self.assertEqual(
+            self._type_counts(self.holdout_cases),
+            {"INITIAL": 10, "NEXT": 10, "FOLLOW_UP": 10},
+        )
+        pair_counts = Counter(
+            (case["reference_outputs"]["quality_label"], case["inputs"]["question_type"])
+            for case in self.holdout_cases
+        )
+        self.assertEqual(len(pair_counts), 9)
+        self.assertLessEqual(max(pair_counts.values()) - min(pair_counts.values()), 1)
+        self.assertEqual(set(pair_counts.values()), {3, 4})
 
-        def pair_counts(cases: list[dict]) -> Counter:
-            return Counter(
-                (
-                    case["reference_outputs"]["quality_label"],
-                    case["inputs"]["question_type"],
-                )
-                for case in cases
+    def test_holdout_reference_scores_have_review_workflow(self) -> None:
+        pending = pending_reference_reviews(self.holdout_cases)
+        self.assertLessEqual(len(pending), 30)
+        for case in self.holdout_cases:
+            scores = case["reference_outputs"]["reference_scores"]
+            self.assertEqual(set(scores), set(SCORE_FIELDS))
+            self.assertTrue(all(1 <= value <= 5 for value in scores.values()))
+            self.assertIn(
+                case["metadata"]["reference_review_status"],
+                {"pending_owner_review", "approved"},
             )
 
-        self.assertEqual(len(all_cases), 36)
-        self.assertEqual(set(pair_counts(all_cases).values()), {4})
-        self.assertEqual(set(pair_counts(dev_cases).values()), {3})
-        self.assertEqual(set(pair_counts(holdout_cases).values()), {1})
-
-    def test_common_node_runs_for_every_case_with_injected_chain(self) -> None:
-        for case in self.cases:
+    def test_common_node_runs_for_regression_cases_with_injected_chain(self) -> None:
+        for case in self.regression_cases:
             with self.subTest(case_id=case["metadata"]["case_id"]):
+                previous_history_length = len(case["inputs"]["evaluation_history"])
                 result = answer_evaluation_node(
                     case["inputs"], chain=FakeAnswerEvaluationChain()
                 )
                 evaluation = result["current_evaluation"]
                 self.assertEqual(evaluation["overall_score"], 60.0)
-                self.assertEqual(len(result["evaluation_history"]), 1)
+                self.assertEqual(
+                    len(result["evaluation_history"]),
+                    previous_history_length + 1,
+                )
 
-    def test_exact_human_scores_produce_perfect_metrics(self) -> None:
+    def test_exact_reference_scores_produce_zero_mae(self) -> None:
         outputs = []
         references = []
-        for case in self.cases:
+        for case in self.regression_cases:
             reference = case["reference_outputs"]
-            scores = reference["human_scores"]
+            scores = reference["reference_scores"]
             output = {
                 "scores": scores,
                 "overall_score": calculate_overall_score(scores),
@@ -100,10 +125,13 @@ class AnswerEvaluationReliabilityTest(unittest.TestCase):
                 outputs=output,
                 reference_outputs=reference,
             )
-            self.assertEqual(row_metrics[0]["score"], 1.0)
-            self.assertEqual(row_metrics[1]["score"], 1.0)
-            self.assertEqual(row_metrics[2]["score"], 0.0)
-            self.assertEqual(row_metrics[3]["score"], 1)
+            self.assertEqual(
+                {metric["key"] for metric in row_metrics},
+                {"evaluation_output_valid", "mae_case", "overall_score_consistency"},
+            )
+            self.assertEqual(row_metrics[0]["score"], 1)
+            self.assertEqual(row_metrics[1]["score"], 0.0)
+            self.assertEqual(row_metrics[2]["score"], 1)
             outputs.append(output)
             references.append(reference)
 
@@ -112,48 +140,16 @@ class AnswerEvaluationReliabilityTest(unittest.TestCase):
             reference_outputs=references,
         )
         summary_by_key = {metric["key"]: metric["score"] for metric in summary}
-        self.assertEqual(
-            set(summary_by_key),
-            {"within1_overall", "mae_overall", "spearman_overall"},
-        )
-        self.assertEqual(summary_by_key["within1_overall"], 1.0)
-        self.assertEqual(summary_by_key["mae_overall"], 0.0)
-        self.assertAlmostEqual(summary_by_key["spearman_overall"], 1.0)
+        self.assertEqual(summary_by_key, {"mae_overall": 0.0})
 
-    def test_overall_spearman_compares_case_level_answer_scores(self) -> None:
-        fields = (
-            "relevance",
-            "specificity",
-            "logical_structure",
-            "role_clarity",
-            "action_clarity",
-            "result_clarity",
-        )
-        human_rows = [dict(zip(fields, [score] * 6)) for score in (1, 3, 5)]
-        ai_rows = [
-            dict(zip(fields, values))
-            for values in (
-                (2, 5, 4, 3, 2, 1),
-                (1, 5, 2, 3, 5, 2),
-                (3, 3, 1, 5, 3, 5),
-            )
-        ]
-        outputs = [
-            {
-                "scores": scores,
-                "overall_score": calculate_overall_score(scores),
-            }
-            for scores in ai_rows
-        ]
-        references = [{"human_scores": scores} for scores in human_rows]
-
-        summary = answer_reliability_summary(
+        diagnostics = answer_diagnostic_summary(
             outputs=outputs,
             reference_outputs=references,
         )
-        summary_by_key = {metric["key"]: metric["score"] for metric in summary}
-
-        self.assertAlmostEqual(summary_by_key["spearman_overall"], 1.0)
+        by_key = {metric["key"]: metric["score"] for metric in diagnostics}
+        self.assertEqual(by_key["evaluation_output_coverage"], 1.0)
+        for field in SCORE_FIELDS:
+            self.assertEqual(by_key[f"mae_{field}"], 0.0)
 
     def test_schema_truncates_excess_list_items(self) -> None:
         evaluation = AnswerEvaluationResult(
@@ -196,10 +192,7 @@ class AnswerEvaluationReliabilityTest(unittest.TestCase):
             "question_type": "FOLLOW_UP",
             "interview_strategy": {
                 "competencies": [
-                    {
-                        "competency": "문제 해결 능력",
-                        "verification_points": ["측정 결과"],
-                    }
+                    {"competency": "문제 해결 능력", "verification_points": ["측정 결과"]}
                 ]
             },
             "evaluation_history": [
@@ -210,7 +203,7 @@ class AnswerEvaluationReliabilityTest(unittest.TestCase):
                 },
                 {
                     "question": "협업 경험을 설명해 주세요?",
-                    "answer": "팀과 기준을 합의했습니다.",
+                    "answer": "기획자와 회의했습니다.",
                     "competency": "협업 능력",
                 },
             ],
@@ -218,53 +211,43 @@ class AnswerEvaluationReliabilityTest(unittest.TestCase):
 
         answer_evaluation_node(state, chain=chain)
 
-        previous_answers = json.loads(
-            chain.calls[0]["previous_competency_answers"]
-        )
+        previous_answers = json.loads(chain.calls[0]["previous_competency_answers"])
         self.assertEqual(len(previous_answers), 1)
-        self.assertEqual(
-            previous_answers[0]["answer"],
-            "부하 테스트로 병목을 발견했습니다.",
-        )
+        self.assertEqual(previous_answers[0]["answer"], "부하 테스트로 병목을 발견했습니다.")
 
-    def test_failed_target_output_does_not_crash_evaluators(self) -> None:
-        reference = self.cases[0]["reference_outputs"]
+    def test_invalid_output_is_counted_as_maximum_error(self) -> None:
+        reference = self.regression_cases[0]["reference_outputs"]
+        valid_scores = reference["reference_scores"]
+        outputs = [
+            {},
+            {
+                "scores": valid_scores,
+                "overall_score": calculate_overall_score(valid_scores),
+            },
+        ]
+        references = [reference, reference]
+
         row_metrics = score_agreement_evaluator(
-            outputs={},
-            reference_outputs=reference,
+            outputs={}, reference_outputs=reference
         )
         self.assertEqual(row_metrics[0]["key"], "evaluation_output_valid")
         self.assertEqual(row_metrics[0]["score"], 0)
 
-        valid_scores = reference["human_scores"]
-        summary = answer_diagnostic_summary(
-            outputs=[
-                {},
-                {
-                    "scores": valid_scores,
-                    "overall_score": calculate_overall_score(valid_scores),
-                },
-            ],
-            reference_outputs=[reference, reference],
+        diagnostics = answer_diagnostic_summary(
+            outputs=outputs, reference_outputs=references
         )
-        summary_by_key = {metric["key"]: metric["score"] for metric in summary}
-        self.assertEqual(summary_by_key["evaluation_output_coverage"], 0.5)
-
-        core_summary = answer_reliability_summary(
-            outputs=[
-                {},
-                {
-                    "scores": valid_scores,
-                    "overall_score": calculate_overall_score(valid_scores),
-                },
-            ],
-            reference_outputs=[reference, reference],
-        )
-        core_by_key = {
-            metric["key"]: metric["score"] for metric in core_summary
+        diagnostic_by_key = {
+            metric["key"]: metric["score"] for metric in diagnostics
         }
-        self.assertEqual(core_by_key["within1_overall"], 0.5)
-        self.assertEqual(core_by_key["mae_overall"], 2.0)
+        self.assertEqual(diagnostic_by_key["evaluation_output_coverage"], 0.5)
+        for field in SCORE_FIELDS:
+            self.assertEqual(diagnostic_by_key[f"mae_{field}"], 2.0)
+
+        core = answer_reliability_summary(
+            outputs=outputs, reference_outputs=references
+        )
+        self.assertEqual(core[0]["key"], "mae_overall")
+        self.assertEqual(core[0]["score"], 2.0)
 
 
 if __name__ == "__main__":

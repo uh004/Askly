@@ -18,9 +18,7 @@ QUESTION_METRICS = (
     "route_compliance",
 )
 ANSWER_CORE_METRICS = (
-    "within1_overall",
     "mae_overall",
-    "spearman_overall",
 )
 ANSWER_DIMENSIONS = (
     "relevance",
@@ -95,7 +93,7 @@ def main() -> None:
     parser.add_argument(
         "--include-dimensions",
         action="store_true",
-        help="답변 평가의 6개 항목별 MAE/Within-1/Spearman도 출력합니다.",
+        help="답변 평가의 6개 항목별 MAE도 출력합니다.",
     )
     args = parser.parse_args()
 
@@ -114,13 +112,7 @@ def main() -> None:
         metrics = list(ANSWER_CORE_METRICS)
         if args.include_dimensions:
             for dimension in ANSWER_DIMENSIONS:
-                metrics.extend(
-                    (
-                        f"mae_{dimension}",
-                        f"within1_{dimension}",
-                        f"spearman_{dimension}",
-                    )
-                )
+                metrics.append(f"mae_{dimension}")
     _print_table(metrics, v1_scores, v2_scores)
 
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from copy import deepcopy
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -12,125 +10,113 @@ from langsmith import Client
 from langsmith.utils import LangSmithNotFoundError
 
 from evals.answer_evaluation.metrics import SCORE_FIELDS
+from evals.dataset_utils import (
+    EVAL_SUITES,
+    dataset_content_hash,
+    read_jsonl,
+    remote_examples_hash,
+)
 
 
-DEFAULT_DATASET_PATH = Path(__file__).with_name("dataset_v1.jsonl")
-V2_ADDITIONS_PATH = Path(__file__).with_name("dataset_v2_additions.jsonl")
+DATASET_DIR = Path(__file__).with_name("datasets")
+DATASET_PATHS = {
+    "regression": DATASET_DIR / "regression_v1.jsonl",
+    "final_holdout": DATASET_DIR / "final_holdout_v1.jsonl",
+}
 QUALITY_LABELS = {"GOOD", "MEDIUM", "POOR"}
 QUESTION_TYPES = {"INITIAL", "FOLLOW_UP", "NEXT"}
-DATASET_VERSIONS = {"v1", "v2"}
-DATASET_SPLITS = {"dev", "holdout"}
-
-
-def _read_cases(path: Path) -> list[dict[str, Any]]:
-    cases: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as file:
-        for line_number, raw_line in enumerate(file, start=1):
-            if not raw_line.strip():
-                continue
-            try:
-                case = json.loads(raw_line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{path}:{line_number} JSON 형식 오류: {exc}") from exc
-
-            for key in ("inputs", "reference_outputs", "metadata"):
-                if not isinstance(case.get(key), dict):
-                    raise ValueError(f"{path}:{line_number}에 dict 타입 {key}가 필요합니다.")
-
-            inputs = case["inputs"]
-            for key in (
-                "current_question",
-                "current_answer",
-                "current_competency",
-                "question_type",
-                "interview_strategy",
-            ):
-                if not inputs.get(key):
-                    raise ValueError(f"{path}:{line_number} inputs.{key}가 필요합니다.")
-            if inputs["question_type"] not in QUESTION_TYPES:
-                raise ValueError(f"{path}:{line_number} question_type이 올바르지 않습니다.")
-
-            reference = case["reference_outputs"]
-            if reference.get("quality_label") not in QUALITY_LABELS:
-                raise ValueError(f"{path}:{line_number} quality_label이 올바르지 않습니다.")
-            human_scores = reference.get("human_scores")
-            if not isinstance(human_scores, dict) or set(human_scores) != set(SCORE_FIELDS):
-                raise ValueError(f"{path}:{line_number} human_scores 항목이 일치하지 않습니다.")
-            if any(
-                not isinstance(score, int) or not 1 <= score <= 5
-                for score in human_scores.values()
-            ):
-                raise ValueError(f"{path}:{line_number} Human 점수는 1~5 정수여야 합니다.")
-            if not case["metadata"].get("case_id"):
-                raise ValueError(f"{path}:{line_number} metadata.case_id가 필요합니다.")
-            cases.append(case)
-
-    return cases
+DATASET_VERSION = "v1"
 
 
 def load_cases(
     path: Path | None = None,
     *,
-    version: str = "v1",
-    split: str | None = None,
+    suite: str = "regression",
 ) -> list[dict[str, Any]]:
-    if version not in DATASET_VERSIONS:
-        raise ValueError(f"지원하지 않는 Dataset 버전입니다: {version}")
-    if split is not None and split not in DATASET_SPLITS:
-        raise ValueError(f"지원하지 않는 Dataset split입니다: {split}")
+    if suite not in EVAL_SUITES:
+        raise ValueError(f"지원하지 않는 평가 suite입니다: {suite}")
+    cases = read_jsonl(path or DATASET_PATHS[suite])
 
-    if path is not None:
-        cases = _read_cases(path)
-    else:
-        cases = _read_cases(DEFAULT_DATASET_PATH)
-        if version == "v2":
-            base_cases = deepcopy(cases)
-            for case in base_cases:
-                case["metadata"]["split"] = "dev"
-                case["metadata"]["dataset_version"] = "v2"
-            cases = base_cases + _read_cases(V2_ADDITIONS_PATH)
+    for index, case in enumerate(cases, start=1):
+        for key in ("inputs", "reference_outputs", "metadata"):
+            if not isinstance(case.get(key), dict):
+                raise ValueError(f"Case {index}에 dict 타입 {key}가 필요합니다.")
+        inputs = case["inputs"]
+        for key in (
+            "current_question",
+            "current_answer",
+            "current_competency",
+            "question_type",
+            "interview_strategy",
+        ):
+            if not inputs.get(key):
+                raise ValueError(f"Case {index}에 inputs.{key}가 필요합니다.")
+        if inputs["question_type"] not in QUESTION_TYPES:
+            raise ValueError(f"Case {index}의 question_type이 올바르지 않습니다.")
+
+        reference = case["reference_outputs"]
+        if reference.get("quality_label") not in QUALITY_LABELS:
+            raise ValueError(f"Case {index}의 quality_label이 올바르지 않습니다.")
+        scores = reference.get("reference_scores")
+        if not isinstance(scores, dict) or set(scores) != set(SCORE_FIELDS):
+            raise ValueError(f"Case {index}의 reference_scores 항목이 일치하지 않습니다.")
+        if any(
+            not isinstance(score, int) or not 1 <= score <= 5
+            for score in scores.values()
+        ):
+            raise ValueError(f"Case {index}의 Reference 점수는 1~5 정수여야 합니다.")
+
+        metadata = case["metadata"]
+        if not metadata.get("case_id"):
+            raise ValueError(f"Case {index}에 metadata.case_id가 필요합니다.")
+        if metadata.get("suite") != suite:
+            raise ValueError(
+                f"{metadata['case_id']}: suite는 {suite!r}이어야 합니다."
+            )
+        if not metadata.get("weakness") and suite == "final_holdout":
+            raise ValueError(f"{metadata['case_id']}: weakness 진단 태그가 필요합니다.")
 
     case_ids = [case["metadata"]["case_id"] for case in cases]
-    if len(case_ids) != len(set(case_ids)):
-        raise ValueError("중복된 metadata.case_id가 있습니다.")
-
-    if version == "v2":
-        invalid_splits = {
-            case["metadata"].get("split") for case in cases
-        } - DATASET_SPLITS
-        if invalid_splits:
-            raise ValueError(f"v2 Case의 split이 올바르지 않습니다: {invalid_splits}")
-        if split is not None:
-            cases = [case for case in cases if case["metadata"]["split"] == split]
-
     if not cases:
         raise ValueError("검증 Case가 없습니다.")
+    if len(case_ids) != len(set(case_ids)):
+        raise ValueError("중복된 metadata.case_id가 있습니다.")
 
     quality_counts = Counter(
         case["reference_outputs"]["quality_label"] for case in cases
     )
     type_counts = Counter(case["inputs"]["question_type"] for case in cases)
-    pair_counts = Counter(
-        (
-            case["reference_outputs"]["quality_label"],
-            case["inputs"]["question_type"],
-        )
-        for case in cases
-    )
     if set(quality_counts) != QUALITY_LABELS or len(set(quality_counts.values())) != 1:
         raise ValueError(f"품질 등급별 Case가 균형적이지 않습니다: {dict(quality_counts)}")
     if set(type_counts) != QUESTION_TYPES or len(set(type_counts.values())) != 1:
         raise ValueError(f"질문 유형별 Case가 균형적이지 않습니다: {dict(type_counts)}")
+
+    pair_counts = Counter(
+        (case["reference_outputs"]["quality_label"], case["inputs"]["question_type"])
+        for case in cases
+    )
     expected_pairs = {
         (quality, question_type)
         for quality in QUALITY_LABELS
         for question_type in QUESTION_TYPES
     }
-    if set(pair_counts) != expected_pairs or len(set(pair_counts.values())) != 1:
+    if set(pair_counts) != expected_pairs or max(pair_counts.values()) - min(pair_counts.values()) > 1:
         raise ValueError(
-            f"품질 등급×질문 유형 Case가 균형적이지 않습니다: {dict(pair_counts)}"
+            f"품질 등급×질문 유형은 조합별 1건 차이 이내여야 합니다: {dict(pair_counts)}"
         )
+    if suite == "final_holdout" and (
+        set(quality_counts.values()) != {10} or set(type_counts.values()) != {10}
+    ):
+        raise ValueError("Final Holdout은 품질 등급과 질문 유형별 각각 10건이어야 합니다.")
     return cases
+
+
+def pending_reference_reviews(cases: list[dict[str, Any]]) -> list[str]:
+    return [
+        case["metadata"]["case_id"]
+        for case in cases
+        if case["metadata"].get("reference_review_status") != "approved"
+    ]
 
 
 def ensure_langsmith_dataset(
@@ -138,8 +124,9 @@ def ensure_langsmith_dataset(
     *,
     dataset_name: str,
     cases: list[dict[str, Any]],
-    dataset_version: str = "v1",
+    suite: str,
 ) -> tuple[Any, bool]:
+    content_hash = dataset_content_hash(cases)
     try:
         dataset = client.read_dataset(dataset_name=dataset_name)
         created = False
@@ -147,10 +134,15 @@ def ensure_langsmith_dataset(
         dataset = client.create_dataset(
             dataset_name,
             description=(
-                "Askly 답변 평가 신뢰성 검증셋: GOOD/MEDIUM/POOR 균형 Case "
-                f"({dataset_version})"
+                "Askly 답변 평가 신뢰성 검증: GOOD/MEDIUM/POOR 균형 사례 "
+                f"({suite}, {DATASET_VERSION})"
             ),
-            metadata={"version": dataset_version, "task": "answer_evaluation"},
+            metadata={
+                "version": DATASET_VERSION,
+                "suite": suite,
+                "task": "answer_evaluation",
+                "content_sha256": content_hash,
+            },
         )
         client.create_examples(
             dataset_id=dataset.id,
@@ -166,28 +158,9 @@ def ensure_langsmith_dataset(
         created = True
 
     examples = list(client.list_examples(dataset_id=dataset.id))
-    expected_case_ids = {case["metadata"]["case_id"] for case in cases}
-    actual_case_ids = {
-        example.metadata.get("case_id")
-        for example in examples
-        if example.metadata
-    }
-    if actual_case_ids != expected_case_ids:
+    if remote_examples_hash(examples) != content_hash:
         raise RuntimeError(
-            f"LangSmith Dataset {dataset_name!r}의 Case가 로컬과 다릅니다. "
+            f"LangSmith Dataset {dataset_name!r}의 내용이 로컬과 다릅니다. "
             "기존 Dataset을 덮어쓰지 말고 새 버전 이름을 사용하세요."
         )
-
-    for split_name in sorted(DATASET_SPLITS):
-        example_ids = [
-            example.id
-            for example in examples
-            if example.metadata and example.metadata.get("split") == split_name
-        ]
-        if example_ids:
-            client.update_dataset_splits(
-                dataset_id=dataset.id,
-                split_name=split_name,
-                example_ids=example_ids,
-            )
     return dataset, created

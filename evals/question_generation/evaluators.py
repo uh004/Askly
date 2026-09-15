@@ -20,7 +20,7 @@ class QuestionQualityJudgment(BaseModel):
     groundedness: RubricScore
     jd_relevance: RubricScore
     personalization: RubricScore
-    followup_relevance: RubricScore | None = None
+    followup_relevance: RubricScore
     unsupported_assumption: bool
     unsupported_assumption_reason: str = Field(default="", max_length=500)
 
@@ -55,7 +55,9 @@ def _build_judge_chain() -> Any:
                 "Personalization 5점은 질문 문장에 지원자의 특정 프로젝트·조직·기술·"
                 "역할·행동 중 구체적인 근거가 드러나야 하며, 다른 지원자에게도 그대로 "
                 "사용할 수 있는 일반 질문은 최대 3점입니다. "
-                "FOLLOW_UP이 아니면 followup_relevance는 null로 반환하세요. "
+                "followup_relevance는 항상 반환하세요. FOLLOW_UP이면 직전 답변의 "
+                "누락 항목을 얼마나 정확히 겨냥했는지 평가하고, FOLLOW_UP이 아니면 "
+                "score=5와 '평가 대상 아님'이라는 이유를 반환하세요. "
                 "질문이 존재하지 않는 경험·기술·수치·역할을 사실처럼 전제하면 "
                 "unsupported_assumption을 true로 판단하세요.",
             ),
@@ -161,12 +163,8 @@ def _question_quality_results(
         results.append(
             {
                 "key": "followup_relevance",
-                "score": followup.score if followup else 1,
-                "comment": (
-                    followup.reason
-                    if followup
-                    else "Judge가 FOLLOW_UP 점수를 반환하지 않았습니다."
-                ),
+                "score": followup.score,
+                "comment": followup.reason,
             }
         )
 
